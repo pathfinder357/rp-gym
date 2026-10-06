@@ -12,6 +12,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.jpa.repository.QueryHints;
 import org.springframework.data.repository.query.Param;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -33,4 +34,11 @@ public interface OutboxEventJpaRepository extends JpaRepository<OutboxEvent, UUI
     @QueryHints(@QueryHint(name = "jakarta.persistence.lock.timeout", value = "-2"))
     @Query("select o from OutboxEvent o where o.status = :status order by o.createdAt asc")
     List<OutboxEvent> findByStatusForUpdate(@Param("status") OutboxStatus status, Pageable pageable);
+
+
+     // 같은 부분 인덱스(PENDING 의 created_at)를 탄다. 상태를 파라미터가 아닌 상수로 두는 이유는
+     // 부분 인덱스의 조건(status = 'PENDING')과 쿼리 조건이 계획 단계에서 맞아야 하기 때문이다.
+    @Query("select min(o.createdAt) from OutboxEvent o"
+            + " where o.status = com.workoutdone.rpgym.game.outbox.domain.OutboxStatus.PENDING")
+    LocalDateTime findOldestPendingCreatedAt();
 }

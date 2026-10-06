@@ -32,10 +32,12 @@ import java.util.Optional;
  * 특히 HEALTH_ACTIVITY_SYNCED를 "활성 Quest가 있나"로 미리 거르지 않는다.
  * 그 판단은 QuestProgressService 안에 있고, 여기서 거르면 baseline 조달 설계가 무너진다.
  *
- * 예외를 던지느냐 마느냐가 이 클래스의 핵심 결정이다.
- *   던진다  -> offset 미커밋 -> 재시도. DB 다운 · 낙관적 락 충돌처럼 "다시 하면 되는 것"
- *   안 던진다 -> 정상 ack.    계약 위반처럼 "몇 번을 해도 같은 결과인 것"
- * 계약 위반에 예외를 던지면 그 파티션이 영원히 막힌다.
+ * 실패를 어떤 예외로 던지느냐가 이 클래스의 핵심 결정이다. 처리 방식은 KafkaConsumerConfig 가 정한다.
+ *   계약 위반(깨진 JSON · 필수 필드 누락) -> ContractViolationException -> 재시도 없이 곧바로 DLT
+ *   DB 다운 같은 일시 장애                -> 서비스 예외 그대로     -> 무한 재시도 (유실 0)
+ *   그 밖의 예외(버그 등)                 -> 서비스 예외 그대로     -> 몇 번 재시도 후 DLT
+ * 예전에는 계약 위반을 로그만 남기고 정상 리턴했다. 파티션은 안 막히지만 메시지가 조용히 사라졌다.
+ * 알 수 없는 eventType 은 여전히 로그만 남기고 넘긴다. Health 가 새 타입을 추가해도 Game 이 멈추면 안 된다.
  */
 @Slf4j
 @Component
@@ -61,20 +63,16 @@ public class HealthEventConsumer {
         try {
             envelope = objectMapper.readValue(message, HealthEventEnvelope.class);
         } catch (JsonProcessingException e) {
-            // 재시도해도 같은 문자열이 같은 곳에서 깨진다.
-            // 재시도해도 실패할 파싱 에러(DLQ 대상)이므로 메시지를
-            // Consume하지 않고 안전하게 건너뛰려는 의도의 코드
-            log.error("health event 역직렬화 실패. 건너뛴다. message={}", message, e);
-            return;
+            // 재시도해도 같은 문자열이 같은 곳에서 깨진다. 재시도 없이 DLT로 보낸다.
+            throw new ContractViolationException("health event 역직렬화 실패", e);
         }
 
-        // eventType이 null이면 아래 switch가 NPE를 던지고, 그 NPE는 무한 재시도가 된다.
+        // eventType이 null이면 아래 switch가 NPE를 던지고, 그 NPE는 재시도 대상으로 분류되어 헛돈다.
         // 컨슈머가 ACK를 보내지 못하고, 메시지 소비 -> NPE -> NACK(카프카가 실제로 이걸받진않지만 관용적표현임) -> 메시지큐 offset 미전진
         // userId가 null이면 그대로 서비스로 내려가 저장 시점에 터진다.
         if (envelope.eventType() == null || envelope.userId() == null) {
-            log.error("envelope 필수 필드 누락. 건너뛴다. eventType={} userId={}",
-                    envelope.eventType(), envelope.userId());
-            return;
+            throw new ContractViolationException("envelope 필수 필드 누락. eventType=%s userId=%s"
+                    .formatted(envelope.eventType(), envelope.userId()));
         }
 
         // eventId는 여기서만 알 수 있다. 아래 서비스들의 로그에도 붙도록 MDC에 넣는다.
@@ -101,12 +99,8 @@ public class HealthEventConsumer {
     // T1 입구
     private void applySnapshot(HealthEventEnvelope envelope) {
         HealthActivitySyncedData data = convert(envelope.data(), HealthActivitySyncedData.class);
-        if (data == null) {
-            return;
-        }
         if (data.activityDate() == null || data.measuredAt() == null || data.cumulative() == null) {
-            log.error("HEALTH_ACTIVITY_SYNCED 필수 필드 누락. 건너뛴다. data={}", envelope.data());
-            return;
+            throw new ContractViolationException("HEALTH_ACTIVITY_SYNCED 필수 필드 누락. data=" + envelope.data());
         }
 
         Snapshot snapshot = new Snapshot(
@@ -137,14 +131,10 @@ public class HealthEventConsumer {
     // 유저가 Slack 카드에서 수락을 눌렀을 때 HTTP 로 들어와서 만들어진다.
     private void storeSuggestion(HealthEventEnvelope envelope) {
         QuestSuggestedData data = convert(envelope.data(), QuestSuggestedData.class);
-        if (data == null) {
-            return;
-        }
         // 필수 필드 검사에서 title 추가
         if (data.suggestionId() == null || data.activityDate() == null || data.basedOnMeasuredAt() == null
         || data.title() == null || data.title().isEmpty()) {
-            log.error("QUEST_SUGGESTED 필수 필드 누락. 건너뛴다. data={}", envelope.data());
-            return;
+            throw new ContractViolationException("QUEST_SUGGESTED 필수 필드 누락. data=" + envelope.data());
         }
 
         String title = data.title();
@@ -172,14 +162,12 @@ public class HealthEventConsumer {
 
     private <T> T convert(JsonNode data, Class<T> type) {
         if (data == null || data.isNull()) {
-            log.error("data가 비어 있다. 건너뛴다. type={}", type.getSimpleName());
-            return null;
+            throw new ContractViolationException("data가 비어 있다. type=" + type.getSimpleName());
         }
         try {
             return objectMapper.treeToValue(data, type);
         } catch (JsonProcessingException | IllegalArgumentException e) {
-            log.error("data 변환 실패. 건너뛴다. type={} data={}", type.getSimpleName(), data, e);
-            return null;
+            throw new ContractViolationException("data 변환 실패. type=%s data=%s".formatted(type.getSimpleName(), data), e);
         }
     }
 
