@@ -14,9 +14,11 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -46,10 +48,15 @@ class QuestSuggestionServiceTest {
     void setUp() {
         suggestionRepository = mock(QuestSuggestionRepository.class);
         outboxRecorder = mock(OutboxRecorder.class);
-        service = new QuestSuggestionService(suggestionRepository, outboxRecorder);
+        // 기본은 측정 1분 뒤에 받은 것으로 둔다. 만료(30분) 안쪽이다.
+        service = serviceAt(BASED_ON.plus(Duration.ofMinutes(1)));
 
         when(suggestionRepository.existsBySuggestionId(any())).thenReturn(false);
         when(suggestionRepository.save(any())).thenAnswer(call -> call.getArgument(0));
+    }
+
+    private QuestSuggestionService serviceAt(Instant now) {
+        return new QuestSuggestionService(suggestionRepository, outboxRecorder, Clock.fixed(now, ZoneOffset.UTC));
     }
 
     private QuestSuggestionCommand command(String metric, int targetValue) {
@@ -147,6 +154,39 @@ class QuestSuggestionServiceTest {
 
         verify(suggestionRepository, never()).save(any());
         verifyNoInteractions(outboxRecorder);
+    }
+
+    @Test
+    @DisplayName("측정 31분 뒤에 처음 받은 제안은 이미 만료라 저장하지 않고 카드도 보내지 않는다")
+    void 만료된_뒤_도착한_제안은_버린다() {
+        // 컨슈머가 30분 넘게 밀린 경우다. 저장하면 누를 수 없는 Slack 카드가 나간다.
+        service = serviceAt(BASED_ON.plus(Duration.ofMinutes(31)));
+
+        assertEquals(SuggestionOutcome.EXPIRED_ON_ARRIVAL, service.store(validCommand()));
+
+        verify(suggestionRepository, never()).save(any());
+        verifyNoInteractions(outboxRecorder);
+    }
+
+    @Test
+    @DisplayName("만료 시각 정각에 받은 제안도 만료다 — 수락 시점 판정과 같은 반열린 구간")
+    void 만료_정각에_도착한_제안도_버린다() {
+        service = serviceAt(BASED_ON.plus(Duration.ofMinutes(30)));
+
+        assertEquals(SuggestionOutcome.EXPIRED_ON_ARRIVAL, service.store(validCommand()));
+
+        verify(suggestionRepository, never()).save(any());
+        verifyNoInteractions(outboxRecorder);
+    }
+
+    @Test
+    @DisplayName("측정 29분 뒤에 받은 제안은 아직 살아 있어 저장한다")
+    void 만료_전에_도착한_제안은_저장한다() {
+        service = serviceAt(BASED_ON.plus(Duration.ofMinutes(29)));
+
+        assertEquals(SuggestionOutcome.STORED, service.store(validCommand()));
+
+        verify(suggestionRepository).save(any());
     }
 
     @Test

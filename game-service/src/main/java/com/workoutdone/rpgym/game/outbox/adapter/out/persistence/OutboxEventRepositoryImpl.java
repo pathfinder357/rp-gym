@@ -8,7 +8,9 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
 @Repository
 @RequiredArgsConstructor
@@ -26,5 +28,10 @@ public class OutboxEventRepositoryImpl implements OutboxEventRepository {
     public List<OutboxEvent> findPendingForUpdate(int limit) {
         return outboxEventJpaRepository.findByStatusForUpdate(
                 OutboxStatus.PENDING, PageRequest.of(0, limit));
+    }
+
+    @Override
+    public Optional<LocalDateTime> findOldestPendingCreatedAt() {
+        return Optional.ofNullable(outboxEventJpaRepository.findOldestPendingCreatedAt());
     }
 }

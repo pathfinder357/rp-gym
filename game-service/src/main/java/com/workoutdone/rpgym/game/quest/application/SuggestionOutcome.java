@@ -18,6 +18,10 @@ public enum SuggestionOutcome {
     // 로그를 에러로 남기면 시연 중에 화면이 빨개지고 진짜 계약 위반과 구분이 안 된다.
     DUPLICATE_SUGGESTION,
 
+    // 받은 시점에 이미 만료됐다. 컨슈머가 30분 넘게 밀렸다는 뜻이다.
+    // 저장하면 누를 수 없는 Slack 카드가 나가므로 저장도 적재도 하지 않는다.
+    EXPIRED_ON_ARRIVAL,
+
     // metric 문자열이 세 종류 밖이다. 만들 수 없는 퀘스트를 카드로 띄우면 안 되므로 여기서 버린다.
     UNKNOWN_METRIC,
 

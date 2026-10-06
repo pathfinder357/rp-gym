@@ -13,6 +13,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
@@ -39,6 +40,7 @@ public class QuestSuggestionService {
 
     private final QuestSuggestionRepository questSuggestionRepository;
     private final OutboxRecorder outboxRecorder;
+    private final Clock clock;
 
     // 제안을 저장하면서 slack 카드용 이벤트를 outbox에 적재
     @Transactional
@@ -52,6 +54,14 @@ public class QuestSuggestionService {
         // 데이터베이스 제약은 두 번째 방어선이고, 조용히 먼저 실행되는 이 검사가 첫 번째다.
         if (questSuggestionRepository.existsBySuggestionId(command.suggestionId())) {
             return discarded(SuggestionOutcome.DUPLICATE_SUGGESTION, command);
+        }
+
+        // 컨슈머가 30분 넘게 밀린 뒤 처음 받은 제안이다. 저장하면 수락할 수 없는 카드가 나간다.
+        // 만료 시각과 같으면 만료로 본다. 수락 시점의 QuestSuggestion.isExpired 와 같은 규칙이다.
+        // 다시 배달돼도 여전히 만료라 또 버려지므로 재배달 중복은 따로 신경 쓸 필요가 없다.
+        Instant expiresAt = command.basedOnMeasuredAt().plus(SUGGESTION_TTL);
+        if (!clock.instant().isBefore(expiresAt)) {
+            return discarded(SuggestionOutcome.EXPIRED_ON_ARRIVAL, command);
         }
 
         // metric 을 문자열로 받는 이유는 이 값을 만드는 쪽이 AI 라서 세 종류 밖일 수 있기 때문이다.
@@ -72,7 +82,7 @@ public class QuestSuggestionService {
                 command.targetValue(),
                 command.activityDate(),
                 command.basedOnMeasuredAt(),
-                command.basedOnMeasuredAt().plus(SUGGESTION_TTL)
+                expiresAt
         ));
 
         // 알림 담당 서비스가 이 이벤트를 받아 Slack 카드를 띄운다.

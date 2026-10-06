@@ -22,6 +22,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -147,38 +148,53 @@ class HealthEventConsumerTest {
     }
 
     @Test
-    @DisplayName("깨진 JSON — 예외를 던지지 않는다. 몇 번을 다시 읽어도 같은 자리에서 깨진다")
-    void malformedJsonDoesNotThrow() {
-        assertThatCode(() -> consumer.consume("{ this is not json")).doesNotThrowAnyException();
+    @DisplayName("깨진 JSON — 계약 위반 예외를 던진다. 재시도 없이 DLT로 옮겨져 조용히 사라지지 않는다")
+    void malformedJsonThrowsContractViolation() {
+        assertThatThrownBy(() -> consumer.consume("{ this is not json"))
+                .isInstanceOf(ContractViolationException.class);
 
         verifyNoInteractions(questProgressService, questSuggestionService);
     }
 
     @Test
-    @DisplayName("eventType 누락 — switch가 NPE를 던지기 전에 걸러낸다")
-    void missingEventTypeIsSkipped() {
-        assertThatCode(() -> consumer.consume("""
+    @DisplayName("eventType 누락 — switch가 NPE를 던지기 전에 계약 위반으로 걸러낸다")
+    void missingEventTypeThrowsContractViolation() {
+        assertThatThrownBy(() -> consumer.consume("""
                 {
                   "eventId": "b1f4c8e0-3a52-4d17-9c6e-08f1a7d34b90",
                   "userId": "9f1c8e2a-4b7d-4c3e-8a11-2f6d9c0b7e33",
                   "data": {}
                 }
-                """)).doesNotThrowAnyException();
+                """)).isInstanceOf(ContractViolationException.class);
 
         verifyNoInteractions(questProgressService, questSuggestionService);
     }
 
     @Test
-    @DisplayName("cumulative 누락 — NPE 대신 건너뛴다. NPE는 재시도 루프가 된다")
-    void missingCumulativeIsSkipped() {
-        assertThatCode(() -> consumer.consume("""
+    @DisplayName("cumulative 누락 — NPE 대신 계약 위반 예외. NPE는 재시도할 가치가 있는 예외로 분류된다")
+    void missingCumulativeThrowsContractViolation() {
+        assertThatThrownBy(() -> consumer.consume("""
                 {
                   "eventId": "b1f4c8e0-3a52-4d17-9c6e-08f1a7d34b90",
                   "eventType": "HEALTH_ACTIVITY_SYNCED",
                   "userId": "9f1c8e2a-4b7d-4c3e-8a11-2f6d9c0b7e33",
                   "data": { "activityDate": "2026-08-28", "measuredAt": "2026-08-28T10:30:00+09:00" }
                 }
-                """)).doesNotThrowAnyException();
+                """)).isInstanceOf(ContractViolationException.class);
+
+        verifyNoInteractions(questProgressService, questSuggestionService);
+    }
+
+    @Test
+    @DisplayName("QUEST_SUGGESTED data 누락 — 계약 위반 예외를 던진다")
+    void missingSuggestionDataThrowsContractViolation() {
+        assertThatThrownBy(() -> consumer.consume("""
+                {
+                  "eventId": "7c2e5a91-6f0b-4c88-b3d2-15ae9047cc61",
+                  "eventType": "QUEST_SUGGESTED",
+                  "userId": "9f1c8e2a-4b7d-4c3e-8a11-2f6d9c0b7e33"
+                }
+                """)).isInstanceOf(ContractViolationException.class);
 
         verifyNoInteractions(questProgressService, questSuggestionService);
     }
