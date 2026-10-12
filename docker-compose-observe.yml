@@ -1,0 +1,35 @@
+# ============================================================
+# (B 준비, 2026-10-11) 로컬 관측 실험용 오버레이 — 운영처럼 알림 · 로그 검색이 동작하게 한다
+#
+#   docker compose -f docker-compose-develop.yml -f docker-compose-observe.yml up -d prometheus grafana loki alloy zipkin
+#
+# develop 구성과 다른 점
+#   - Prometheus: job 이름을 game-blue · notification-blue 로(prometheus-observe.yml). 알림 규칙이 job=~"game-.*" 로 거른다
+#   - Grafana   : 알림 규칙 · 연락처 · 정책(provisioning/alerting)을 붙이고, Slack 웹훅을 .env 의 SLACK_WEBHOOK_URL 로 넘긴다
+#                 규칙은 game-consumer-alerts 그룹만(monitoring/grafana/alert-rules-observe.yml)
+#   - Alloy     : 컨테이너 로그에 더해 실행기가 남기는 앱 로그(game-service/exp-results/*.log)도 Loki 로 보낸다(job=game-blue)
+# 앱(game-service)은 그대로 실행기(run_exp.ps1)가 호스트에서 bootRun 으로 띄운다. 운영과의 차이는 이것 하나다
+# ============================================================
+services:
+  prometheus:
+    volumes:
+      - ./monitoring/prometheus/prometheus-observe.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+
+  grafana:
+    environment:
+      SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL}"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/provisioning/alerting:/etc/grafana/provisioning/alerting:ro
+      # 로컬 실험에서는 game 규칙만 쓴다(Health · CPU 규칙은 데이터가 없어 Slack 을 어지럽힘). 원본 alert-rules.yml 자리에 덮어 붙인다
+      - ./monitoring/grafana/alert-rules-observe.yml:/etc/grafana/provisioning/alerting/alert-rules.yml:ro
+
+  alloy:
+    volumes:
+      - ./monitoring/alloy/config-observe.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+      - ./game-service/exp-results:/exp-logs:ro
