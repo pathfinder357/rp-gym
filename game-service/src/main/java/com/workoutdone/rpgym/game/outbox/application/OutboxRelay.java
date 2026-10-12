@@ -29,6 +29,7 @@ public class OutboxRelay {
     private final OutboxEventRepository outboxEventRepository;
     private final EventPublisherPort eventPublisherPort;
     private final OutboxPublishProperties properties;
+    private final OutboxTraceContext outboxTraceContext;
 
     /** @return 이번 라운드에 발행 성공한 건수 */
     @Transactional
@@ -67,12 +68,14 @@ public class OutboxRelay {
              * 발행 시점에 JSON을 다시 만들면 event_id가 재발행마다 바뀌어
              * 소비 측의 중복 처리 방지가 무력화된다.
              */
-            eventPublisherPort.publish(
-                    properties.topic(),
-                    event.getPartitionKey(),
-                    event.getPayload(),
-                    event.getEventType()
-            );
+            // (R-17) 적재 시점의 trace 를 부모로 발행한다. Notification 까지 같은 traceId 로 이어진다
+            outboxTraceContext.runInContext(event.getTraceContext(), "outbox publish", () ->
+                    eventPublisherPort.publish(
+                            properties.topic(),
+                            event.getPartitionKey(),
+                            event.getPayload(),
+                            event.getEventType()
+                    ));
 
             event.markPublished(Instant.now());
             log.debug("이벤트 발행 완료. eventType={} eventId={}", event.getEventType(), event.getEventId());

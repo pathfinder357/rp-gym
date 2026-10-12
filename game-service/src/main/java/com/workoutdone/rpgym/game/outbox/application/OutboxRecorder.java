@@ -24,6 +24,7 @@ public class OutboxRecorder {
 
     private final OutboxEventRepository outboxEventRepository;
     private final ObjectMapper objectMapper;
+    private final OutboxTraceContext outboxTraceContext;
 
     @Transactional(propagation = Propagation.MANDATORY)
     public OutboxEvent append(
@@ -47,7 +48,7 @@ public class OutboxRecorder {
                 eventId,
                 userId,
                 toJson(envelope)
-        ));
+        ).withTraceContext(outboxTraceContext.capture()));   // (R-17) 지금 처리 중인 trace 를 같이 남긴다
     }
 
     private String toJson(EventEnvelope envelope) {

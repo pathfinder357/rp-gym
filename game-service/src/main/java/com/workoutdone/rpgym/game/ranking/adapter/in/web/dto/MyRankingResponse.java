@@ -11,7 +11,9 @@ public record MyRankingResponse(
         UUID userId,
         int level,
         int totalXp,
-        String tier
+        String tier,
+        // (R-18) 랭킹 점수가 지갑 XP 를 따라잡았는가. MyRankingView 주석 참고
+        boolean upToDate
 ) {
 
     public static MyRankingResponse from(MyRankingView view) {
@@ -22,7 +24,8 @@ public record MyRankingResponse(
                 view.userId(),
                 view.level(),
                 view.totalXp(),
-                view.tier().name()
+                view.tier().name(),
+                view.upToDate()
         );
     }
 }

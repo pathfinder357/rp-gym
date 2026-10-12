@@ -1,74 +1,164 @@
 package com.workoutdone.rpgym.game.ranking.adapter.out.batch;
 
-
 import com.workoutdone.rpgym.game.character.adapter.out.persistence.CharacterRepository;
-import com.workoutdone.rpgym.game.character.domain.Character;
-import com.workoutdone.rpgym.game.character.domain.XpClient;
+import com.workoutdone.rpgym.game.character.adapter.out.persistence.CharacterRepository.RankingSourceRow;
+import com.workoutdone.rpgym.game.character.domain.LevelPolicy;
 import com.workoutdone.rpgym.game.ranking.domain.RankingScore;
 import com.workoutdone.rpgym.game.ranking.domain.RankingStore;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-//Redis 유실 시 ZSET을 다시 만든다.
-//정기 배치가 아님. Redis 장애 복구 직후 수동으로 한번 실행함.
+/**
+ * Redis 유실 · 반영 실패 뒤 ZSET 을 DB(지갑) 기준으로 다시 채운다.
+ *
+ * 정기 배치가 아니다. 다음 경우에 내부 API(RankingAdminController)로 한 번 실행한다.
+ *   - Redis 를 잃었다
+ *   - rpgym.ranking.update.failed 알림이 울렸다
+ *   - 정합성 대조(R-15)의 ranking 검사가 0 이 아니다
+ *
+ * (R-20) 바꾼 점
+ *   예전: 사용자마다 XpClient 호출(N번 조회), 점수의 레벨은 characters.level 에서 읽었다.
+ *   지금: SQL 한 번에 1,000명씩(키셋 페이지네이션). 레벨은 XP 에서 계산한다(LevelPolicy) --
+ *         onXpChanged 와 같은 계산이어야 두 경로의 점수가 같다. characters.level 은 반영 실패로
+ *         뒤처져 있을 수 있어 원천으로 쓰지 않는다.
+ *   쓰기는 ZADD GT 라, 재구축이 읽는 동안 들어온 새 지급(더 큰 값)을 옛 값으로 덮지 않는다.
+ *
+ * 트랜잭션을 걸지 않는다. 페이지마다 짧은 조회로 끝내야 긴 스냅샷이 DB 를 붙잡지 않는다.
+ */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class RankingRebuildJob {
 
-    //한번에 Redis로 보낼 건수.
-    //Redis는 단일스레드라서 2.5만건을 한번에 보내면 그 명령을 처리하는 동안 다른요청이 전부 막히기에 끊어서 보냄.
-    private static final int BATCH_SIZE = 1000;
+    // Redis 는 단일 스레드라 한 번에 너무 많이 보내면 그동안 다른 명령이 전부 막힌다. 끊어서 보낸다.
+    static final int BATCH_SIZE = 1000;
+    // PostgreSQL 은 UUID 를 바이트 순서(부호 없음)로 비교한다. 가장 작은 값은 0 으로 채운 UUID 다.
+    // new UUID(Long.MIN_VALUE, ...) 는 자바 기준 최솟값일 뿐 PostgreSQL 에서는 중간값(0x80...)이라 앞 절반을 건너뛴다.
+    private static final UUID MIN_UUID = new UUID(0L, 0L);
 
     private final CharacterRepository characterRepository;
-    private final XpClient xpClient;
     private final RankingStore rankingStore;
 
+    // 실험용 (A-10, exp/r12-race 브랜치에만 둔다). 생성자를 바꾸지 않으려고 필드 주입
+    @Autowired(required = false)
+    private LegacyRankingRebuild legacyRankingRebuild;
+    // 실험용
 
+    public long rebuild() {
+        return rebuildKeyset(BATCH_SIZE, false);
+    }
 
-    @Transactional(readOnly = true)
-    public long rebuild(){
+    // unionQuery: 실험 전용(A-10). true 면 R-22 이전 쿼리로 읽는다
+    private long rebuildKeyset(int batchSize, boolean unionQuery) {
         long total = 0;
-        int pageNumber = 0;
-        Page<Character> page;
+        UUID after = MIN_UUID;
 
-        do {
-            page = characterRepository.findAll(PageRequest.of(pageNumber, BATCH_SIZE));
+        while (true) {
+            List<RankingSourceRow> rows = unionQuery
+                    ? characterRepository.findRankingSourceUnion(after, batchSize)
+                    : characterRepository.findRankingSource(after, batchSize);
+            if (rows.isEmpty()) {
+                break;
+            }
 
             Map<UUID, Double> batch = new LinkedHashMap<>();
-            for (Character character : page.getContent()){
-                UUID userId = character.getUserId();
-                int totalXp = xpClient.findTotalXp(userId);
-                batch.put(userId, RankingScore.encode(character.getLevel(), totalXp));
+            for (RankingSourceRow row : rows) {
+                int totalXp = row.getTotalXp() == null ? 0 : row.getTotalXp();
+                batch.put(row.getUserId(), RankingScore.encode(LevelPolicy.levelOf(totalXp), totalXp));
             }
             rankingStore.saveAll(batch);
 
             total += batch.size();
-            pageNumber++;
-        }while(page.hasNext());
+            after = rows.get(rows.size() - 1).getUserId();
+            if (rows.size() < batchSize) {
+                break;
+            }
+        }
 
-        log.info("랭킹 재구축 완료. 복구 건수={}", total);
+        log.info("랭킹 재구축 완료. 대상 사용자 수={}", total);
         return total;
     }
 
+    // ---------------------------------------------------------------- 실험 코드 (A-10)
+    /**
+     * 재구축 방식 · 배치 크기를 바꿔 가며 재구축 시간과, 재구축하는 동안의 랭킹 조회(ZSCORE) 지연을 잰다.
+     * 조회 탐침: 별도 스레드가 쉬지 않고 ZSCORE 를 한 번씩 보내고 걸린 시간을 모은다. 재구축 전 3초는 기준선.
+     * Redis 는 단일 스레드라 큰 ZADD 를 처리하는 동안 다른 명령이 기다린다. 그 대기가 p99 · 최대값에 드러난다.
+     */
+    public Map<String, Object> rebuildExperiment(String mode, int batchSize, UUID probeUserId) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("mode", mode);
+        result.put("batchSize", batchSize);
+
+        if (probeUserId != null) {
+            result.put("probeIdle", summarize(probe(probeUserId, 3000, null)));
+        }
+
+        java.util.concurrent.atomic.AtomicBoolean running = new java.util.concurrent.atomic.AtomicBoolean(true);
+        List<Long> during = java.util.Collections.synchronizedList(new ArrayList<>());
+        Thread prober = null;
+        if (probeUserId != null) {
+            prober = new Thread(() -> during.addAll(probe(probeUserId, Long.MAX_VALUE, running)), "a10-probe");
+            prober.start();
+        }
+
+        long t0 = System.nanoTime();
+        long rebuilt = "legacy".equals(mode) ? legacyRankingRebuild.rebuild(batchSize)
+                : rebuildKeyset(batchSize, "keyset-union".equals(mode));
+        long elapsedMs = (System.nanoTime() - t0) / 1_000_000;
+
+        running.set(false);
+        if (prober != null) {
+            try {
+                prober.join(10_000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            result.put("probeDuring", summarize(during));
+        }
+        result.put("rebuilt", rebuilt);
+        result.put("elapsedMs", elapsedMs);
+        log.warn("[A-10] result {}", result);
+        return result;
+    }
+
+    private List<Long> probe(UUID userId, long maxMs, java.util.concurrent.atomic.AtomicBoolean running) {
+        List<Long> micros = new ArrayList<>();
+        long end = System.currentTimeMillis() + Math.min(maxMs, 3_600_000L);
+        while (System.currentTimeMillis() < end && (running == null || running.get())) {
+            long s = System.nanoTime();
+            rankingStore.findScore(userId);
+            micros.add((System.nanoTime() - s) / 1_000);
+        }
+        return micros;
+    }
+
+    private static Map<String, Object> summarize(List<Long> micros) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        long[] a;
+        synchronized (micros) {
+            a = micros.stream().mapToLong(Long::longValue).toArray();
+        }
+        Arrays.sort(a);
+        m.put("count", a.length);
+        if (a.length == 0) {
+            return m;
+        }
+        m.put("p50us", a[(int) Math.min(a.length - 1, Math.floor(a.length * 0.50))]);
+        m.put("p95us", a[(int) Math.min(a.length - 1, Math.floor(a.length * 0.95))]);
+        m.put("p99us", a[(int) Math.min(a.length - 1, Math.floor(a.length * 0.99))]);
+        m.put("p999us", a[(int) Math.min(a.length - 1, Math.floor(a.length * 0.999))]);
+        m.put("maxUs", a[a.length - 1]);
+        return m;
+    }
+    // ---------------------------------------------------------------- 실험 코드
 }
-/**
- * 이 코드는 wallets이 생기면 SQL 한번으로 바꿔야함.
- * 사용자마다 XpClient 를 호출하는 형태로 두었다 — 지금은 rpgym.xp.source=mock 이라 MockXpClient 가 응답하고,
- * wallets 어댑터로 갈아끼우면 그대로 실제 값이 된다. 다만 N 번 호출이라 느리다.
- *
- * SELECT c.user_id, c.level, COALESCE(w.xp, 0) AS total_xp
- *   FROM characters c
- *   LEFT JOIN wallets w ON w.user_id = c.user_id
- *
- * LEFT JOIN 이 필수다. wallets 행은 최초 XP 지급 시에 생기므로,
- * INNER JOIN 이면 아직 XP 를 받지 못한 신규 사용자가 통째로 누락된다.
- */

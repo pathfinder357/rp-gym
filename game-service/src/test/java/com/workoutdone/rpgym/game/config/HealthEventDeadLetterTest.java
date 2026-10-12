@@ -16,7 +16,10 @@ import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -55,6 +58,7 @@ import static org.mockito.Mockito.when;
 // 파티션을 하나로 두어 모든 레코드가 한 줄로 선다. 예전 설정이라면 첫 실패에서 뒤가 전부 막힌다.
 // 서비스는 목으로 대체하고 컨슈머 · 에러 핸들러 · DLT 발행만 진짜로 돈다.
 @SpringJUnitConfig
+@ExtendWith(OutputCaptureExtension.class)
 @EmbeddedKafka(partitions = 1, topics = {HealthEventDeadLetterTest.TOPIC, HealthEventDeadLetterTest.DLT,
         HealthEventDeadLetterTest.BROKEN_DLT_TOPIC})
 class HealthEventDeadLetterTest {
@@ -90,7 +94,7 @@ class HealthEventDeadLetterTest {
 
     @Test
     @DisplayName("계약 위반은 곧바로, 버그는 몇 번 뒤 DLT로 가고, 일시 장애는 DLT로 가지 않으며, 뒤의 정상 레코드는 처리된다")
-    void 실패_종류별로_DLT_경로가_다르다() {
+    void 실패_종류별로_DLT_경로가_다르다(CapturedOutput output) {
         QuestProgressService questProgressService = mock(QuestProgressService.class);
         when(questProgressService.apply(eq(BUG_USER), any()))
                 .thenThrow(new IllegalStateException("버그 흉내: 항상 같은 자리에서 터진다"));
@@ -161,11 +165,24 @@ class HealthEventDeadLetterTest {
         assertThat(attempts.get(4L).get()).isEqualTo(6);
 
         assertThat(registry.get(KafkaConsumerConfig.DLT_COUNTER).counter().count()).isEqualTo(3.0);
+
+        // R-24: DLT 로 간 세 건이 각각 위치와 근본 원인을 담은 ERROR 한 줄을 남긴다 (B-14 에서는 0줄이었다)
+        assertThat(output.getOut()).contains(
+                // 깨진 JSON 은 ContractViolationException 껍데기 안의 근본 원인(파싱 위치까지)이 찍힌다. 분류는 WARN 줄이 알려 준다
+                "DLT 적재. health.events-0@0 key=same-partition eventId=- -> health.events.DLT cause="
+                        + "com.fasterxml.jackson.core.JsonParseException",
+                "(시도 1회, 계약 위반: 곧바로 DLT). health.events-0@0",
+                "DLT 적재. health.events-0@3 key=same-partition",
+                "-> health.events.DLT cause=java.lang.IllegalStateException: 버그 흉내");
+        // 재시도도 시도마다 남는다. 일시 장애는 DLT 로 가지 않지만 실패한 시도는 보인다
+        assertThat(output.getOut()).contains("(시도 3회, 그 밖의 예외: 재시도 후 DLT). health.events-0@3",
+                "(시도 5회, 일시 장애: 풀릴 때까지 재시도). health.events-0@4");
+        assertThat(output.getOut()).doesNotContain("DLT 적재. health.events-0@4");
     }
 
     @Test
     @DisplayName("DLT 발행이 실패하면 원본 오프셋을 커밋하지 않고 같은 레코드를 다시 처리한다 — 조용한 유실 0")
-    void DLT_발행이_실패하면_오프셋을_넘기지_않는다() throws Exception {
+    void DLT_발행이_실패하면_오프셋을_넘기지_않는다(CapturedOutput output) throws Exception {
         HealthEventConsumer consumer = new HealthEventConsumer(new ObjectMapper(),
                 mock(QuestProgressService.class), mock(PartyQuestProgressService.class),
                 mock(QuestSuggestionService.class));
@@ -204,6 +221,8 @@ class HealthEventDeadLetterTest {
         var committed = KafkaTestUtils.getCurrentOffset(broker.getBrokersAsString(), group, topic, 0);
         assertThat(committed == null ? 0L : committed.offset()).isZero();
         assertThat(registry.get(KafkaConsumerConfig.DLT_COUNTER).counter().count()).isZero();
+        // R-24: 발행 실패도 조용하지 않다
+        assertThat(output.getOut()).contains("DLT 발행 실패 -- 오프셋을 넘기지 않고 다시 처리한다. " + topic + "-0@0");
     }
 
     private List<ConsumerRecord<String, String>> readDlt() {

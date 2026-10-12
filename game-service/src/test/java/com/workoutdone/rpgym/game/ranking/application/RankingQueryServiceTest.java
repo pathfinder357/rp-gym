@@ -129,6 +129,29 @@ class RankingQueryServiceTest {
         assertThat(view.percentile()).isEqualTo(50.0);   // 2 / 4 * 100
     }
 
+    @DisplayName("R-18: 랭킹 점수가 지갑 XP 보다 뒤처져 있으면 upToDate=false, 따라잡았으면 true")
+    @Test
+    void reportsWhetherRankingCaughtUpWithWallet() {
+        UUID me = UUID.randomUUID();
+        rankingStore.save(me, RankingScore.encode(3, 250));
+
+        stubbedXp = 300;   // 지갑은 이미 300 (랭킹 반영 전)
+        assertThat(sut.getMyRanking(me).upToDate()).isFalse();
+        assertThat(sut.getMyRanking(me).totalXp()).isEqualTo(250);
+
+        stubbedXp = 250;
+        assertThat(sut.getMyRanking(me).upToDate()).isTrue();
+    }
+
+    @DisplayName("R-18: XP 가 있는데 랭킹에 없으면 아직 반영 전(upToDate=false), XP 가 0 이면 정상(true)")
+    @Test
+    void notRankedUpToDateFlag() {
+        stubbedXp = 0;
+        assertThat(sut.getMyRanking(UUID.randomUUID()).upToDate()).isTrue();
+        stubbedXp = 120;
+        assertThat(sut.getMyRanking(UUID.randomUUID()).upToDate()).isFalse();
+    }
+
     @DisplayName("랭킹에 없는 사용자는 404 가 아니라 기본값을 받는다")
     @Test
     void notRankedUserGetsDefaults() {

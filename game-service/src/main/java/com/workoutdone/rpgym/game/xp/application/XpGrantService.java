@@ -8,6 +8,7 @@ import com.workoutdone.rpgym.game.xp.domain.repo.XpLedgerRepository;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,6 +38,16 @@ public class XpGrantService {
     private final XpLedgerRepository xpLedgerRepository;
     private final WalletRepository walletRepository;
     private final ApplicationEventPublisher events;
+
+    // 실험용 (A-3 지갑 lost update, exp/r12-race 브랜치에만 둔다)
+    // atomic = 지금 코드(UPDATE ... SET xp = xp + :amount) / read-modify-write = 고치기 전 구조
+    //   (findByUserId -> wallet.addXp() -> 변경 감지 UPDATE xp = 읽은 값 + amount)
+    // wallet-delay-ms: 읽기(또는 원자 UPDATE) 앞에 넣는 지연. 두 모드에 똑같이 넣어 조건을 맞춘다
+    @Value("${rpgym.experiment.wallet-mode:atomic}")
+    private String experimentWalletMode;
+    @Value("${rpgym.experiment.wallet-delay-ms:0}")
+    private long experimentWalletDelayMs;
+    // 실험용
 
     // 반환값이 비어 있으면 이미 지급된 건이다. 호출부는 이를 실패로 취급하지 않는다.
     @Transactional
@@ -71,6 +82,24 @@ public class XpGrantService {
     // 원장은 INSERT만 진행하기 때문에 맞고 지갑만 틀리므로, 원장 합계 == 지갑 이라는 정합성 등식이 깨진다.
     // 지금 구조: UPDATE ... SET xp = xp + :amount 한 문장. 더하기를 DB 가 행 락 아래에서 한다.
     private void addToWallet(UUID userId, int amount) {
+        // 실험 코드 (A-3)
+        if ("read-modify-write".equals(experimentWalletMode)) {
+            Optional<Wallet> found = walletRepository.findByUserId(userId);
+            if (found.isPresent()) {
+                Wallet wallet = found.get();
+                int read = wallet.getXp();
+                experimentWalletDelay();
+                wallet.addXp(amount);
+                walletRepository.save(wallet);
+                // 로그는 영문만: 콘솔 코드페이지를 거치면 한글이 깨져 grep 이 안 된다
+                log.warn("[A-3] rmw userId={} read={} amount={} write={}", userId, read, amount, wallet.getXp());
+                return;
+            }
+        } else {
+            experimentWalletDelay();
+        }
+        // 실험 코드
+
         int updated = walletRepository.addXp(userId, amount);
         if (updated == 1) {
             return;
@@ -83,5 +112,17 @@ public class XpGrantService {
         Wallet wallet = Wallet.create(userId);
         wallet.addXp(amount);
         walletRepository.save(wallet);
+    }
+
+    // 실험 코드 (A-3)
+    private void experimentWalletDelay() {
+        if (experimentWalletDelayMs <= 0) {
+            return;
+        }
+        try {
+            Thread.sleep(experimentWalletDelayMs);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 }

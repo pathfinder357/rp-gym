@@ -15,16 +15,24 @@ public class FakeRankingStore implements RankingStore {
 
     @Override
     public void save(UUID userId, double score){
-        scores.put(userId, score);
+        // ZADD GT 흉내 -- 지금보다 클 때만 바꾼다
+        scores.merge(userId, score, Math::max);
     }
 
     @Override
     public void saveAll(Map<UUID, Double> newScores){
-        scores.putAll(newScores);
+        newScores.forEach(this::save);
     }
     @Override
     public Optional<Double> findScore(UUID userId){
         return Optional.ofNullable(scores.get(userId));
+    }
+
+    @Override
+    public Map<UUID, Double> findScores(List<UUID> userIds){
+        Map<UUID, Double> result = new HashMap<>();
+        userIds.forEach(id -> { if (scores.containsKey(id)) result.put(id, scores.get(id)); });
+        return result;
     }
 
     @Override

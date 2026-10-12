@@ -4,6 +4,8 @@ import com.workoutdone.rpgym.game.character.domain.XpClient;
 import com.workoutdone.rpgym.game.ranking.FakeRankingStore;
 import com.workoutdone.rpgym.game.ranking.domain.CharacterLevelWriter;
 import com.workoutdone.rpgym.game.ranking.domain.RankingScore;
+import com.workoutdone.rpgym.game.ranking.domain.RankingStore;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -19,13 +21,15 @@ public class RankingCommandServiceTest {
     private CharacterLevelWriter characterLevelWriter;
     private FakeRankingStore rankingStore;
     private RankingCommandService sut;
+    private SimpleMeterRegistry meterRegistry;
 
     @BeforeEach
     void setUp(){
         xpClient = mock(XpClient.class);
         characterLevelWriter = mock(CharacterLevelWriter.class);
         rankingStore = new FakeRankingStore();
-        sut = new RankingCommandService(xpClient, characterLevelWriter, rankingStore);
+        meterRegistry = new SimpleMeterRegistry();
+        sut = new RankingCommandService(xpClient, characterLevelWriter, rankingStore, new RankingMetrics(meterRegistry));
     }
 
     @DisplayName("같은 호출을 반복해도 점수가 같다 - ZADD 멱등성")
@@ -55,5 +59,35 @@ public class RankingCommandServiceTest {
         sut.onXpChanged(userId);
 
         verify(characterLevelWriter).upsertLevel(userId, 9);    // 1 + 820/100
+    }
+
+    @DisplayName("R-20: 먼저 읽은 낮은 점수가 늦게 써져도 랭킹 점수는 내려가지 않는다")
+    @Test
+    void staleLowerScoreDoesNotOverwrite(){
+        UUID userId = UUID.randomUUID();
+        // 스레드 B 가 먼저 900 을 반영했고, 스레드 A 가 그보다 앞서 읽어 둔 500 을 늦게 쓴다
+        given(xpClient.findTotalXp(userId)).willReturn(900, 500);
+
+        sut.onXpChanged(userId);
+        sut.onXpChanged(userId);
+
+        assertThat(rankingStore.findScore(userId)).contains(RankingScore.encode(10, 900));
+    }
+
+    @DisplayName("R-20: Redis 반영이 실패하면 예외를 삼키되 실패 카운터를 올린다")
+    @Test
+    void redisFailureIsCounted(){
+        UUID userId = UUID.randomUUID();
+        RankingStore broken = mock(RankingStore.class);
+        doThrow(new IllegalStateException("redis down")).when(broken).save(any(), anyDouble());
+        RankingCommandService withBroken =
+                new RankingCommandService(xpClient, characterLevelWriter, broken, new RankingMetrics(meterRegistry));
+        given(xpClient.findTotalXp(userId)).willReturn(300);
+
+        withBroken.onXpChanged(userId);
+
+        assertThat(meterRegistry.get("rpgym.ranking.update.failed").tag("stage", "redis").counter().count())
+                .isEqualTo(1.0);
+        verify(characterLevelWriter).upsertLevel(userId, 4);
     }
 }

@@ -4,6 +4,7 @@ import com.workoutdone.rpgym.game.outbox.application.OutboxRecorder;
 import com.workoutdone.rpgym.game.outbox.domain.AggregateType;
 import com.workoutdone.rpgym.game.outbox.domain.OutboxEventType;
 import com.workoutdone.rpgym.game.quest.application.payload.PartyQuestCompletedData;
+import com.workoutdone.rpgym.game.quest.domain.QuestStatus;
 import com.workoutdone.rpgym.game.quest.domain.aggregate.PartyQuest;
 import com.workoutdone.rpgym.game.quest.domain.aggregate.PartyQuestMember;
 import com.workoutdone.rpgym.game.quest.domain.repo.PartyQuestMemberRepository;
@@ -15,6 +16,7 @@ import com.workoutdone.rpgym.game.xp.domain.SourceType;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -50,6 +52,16 @@ public class PartyQuestProgressService {
     private final PartyQuestMemberRepository partyQuestMemberRepository;
     private final XpGrantService xpGrantService;
     private final OutboxRecorder outboxRecorder;
+
+    // 실험용
+    @Value("${rpgym.experiment.party-tx-delay-ms:0}")
+    private long experimentDelayMs;
+
+    // (A-2 반대 실험 전용) normal = 지금 코드 / naive-claim = 완료 여부를 DB 조건부 UPDATE 결과가 아니라
+    // 트랜잭션 시작 때 읽은 값으로 자바에서 판단한다. 기본 normal. exp/r12-race 브랜치에만 둔다
+    @Value("${rpgym.experiment.party-mode:normal}")
+    private String experimentMode;
+    // 실험용
 
     @Transactional
     public Optional<ContributionResult> apply(UUID userId, Snapshot snapshot) {
@@ -97,6 +109,17 @@ public class PartyQuestProgressService {
             return Optional.of(result);
         }
 
+        // 실험 코드 : 서로 다른 스레드의 파티 트랜잭션 지연을 늘리는 실험
+        if (experimentDelayMs > 0) {
+            try {
+                Thread.sleep(experimentDelayMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        // 실험 코드
+
+
         // 4. 공유 카운터를 올린다. 여기가 경합 지점이다.
         // 상태 조건을 걸지 않는다. 걸면 완료 직후 도착한 이벤트에서
         // 멤버 행만 올라가고 합계는 막혀서 둘이 어긋난다.
@@ -105,6 +128,22 @@ public class PartyQuestProgressService {
         // 5. 완료를 선점한다. 동시에 들어온 트랜잭션 중 하나만 1 을 돌려받는다.
         // 완료 여부는 전적으로 이 코드에서 걸러진다.
         int claimed = partyQuestRepository.claimCompletion(partyQuestId, snapshot.measuredAt());
+
+        if ("naive-claim".equals(experimentMode)) {
+            // (A-2) 보호 장치를 뺀 판단: 0 번에서 읽어 둔 값(트랜잭션 시작 시점)으로 "내가 완료시켰다"를 정한다.
+            // 다른 스레드의 커밋을 못 본 채 판단하므로, 둘이 동시에 완료라고 보거나 아무도 완료라고 못 볼 수 있다.
+            boolean javaSaysComplete = partyQuest.getStatus() == QuestStatus.ACTIVE
+                    && partyQuest.getCurrentVal() + counterDelta >= partyQuest.getTargetVal();
+            // 로그는 영문만: 콘솔 코드페이지를 거치면 한글이 깨져 grep 이 안 된다
+            log.warn("[A-2] judge partyQuestId={} read={} delta={} target={} javaComplete={} dbClaimed={}",
+                    partyQuestId, partyQuest.getCurrentVal(), counterDelta, partyQuest.getTargetVal(),
+                    javaSaysComplete, claimed);
+            if (!javaSaysComplete) {
+                return Optional.of(result);
+            }
+            reward(partyQuestId, userId, snapshot.measuredAt());
+            return Optional.of(result);
+        }
         if (claimed == 0) {
             return Optional.of(result);
         }
@@ -128,6 +167,8 @@ public class PartyQuestProgressService {
         // 한 유저가 두 파티에 속하는 것을 막는 제약이 없어서, 두 파티가 동시에 완료되면
         // 한쪽은 A -> B, 다른 쪽은 B -> A 순서로 지갑 행 락을 잡아 서로를 기다릴 수 있다 (데드락).
         // 모든 트랜잭션이 같은 순서로 락을 잡으면 순환 대기가 생기지 않는다.
+        // 이걸 정리하자면 식사하는 철학자 문제와 비슷하다. userID를 오름차순으로 정렬하면서
+        // 작은 번호를 가지면서 큰 번호에 도달하는 순환대기가 없는 단조 증가에 해당한다.
         List<PartyQuestMember> members = partyQuestMemberRepository.findByPartyQuestId(partyQuestId).stream()
                 .sorted(Comparator.comparing(PartyQuestMember::getUserId))
                 .toList();
