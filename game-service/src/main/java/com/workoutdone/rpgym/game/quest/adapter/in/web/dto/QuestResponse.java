@@ -19,7 +19,9 @@ public record QuestResponse(
         int currentValue,
         String status,
         int rewardXp,
-        Instant expiredAt
+        Instant expiredAt,
+        // (R-18) 진행률의 기준 측정 시각. QuestView 주석 참고
+        Instant progressAsOf
 ) {
 
     public static QuestResponse from(QuestView view) {
@@ -32,7 +34,8 @@ public record QuestResponse(
                 view.currentValue(),
                 view.status().name(),
                 view.rewardXp(),
-                view.expiredAt()
+                view.expiredAt(),
+                view.progressAsOf()
         );
     }
 }

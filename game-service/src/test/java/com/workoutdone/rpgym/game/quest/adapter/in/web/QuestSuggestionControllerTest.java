@@ -45,7 +45,8 @@ class QuestSuggestionControllerTest {
 
         return new QuestView(
                 UUID.randomUUID(), "20분 산책하기", Metric.ACTIVE_MINUTES,
-                20, 31, 0, QuestStatus.ACTIVE, 5, Instant.parse("2026-08-28T14:59:59Z"));
+                20, 31, 0, QuestStatus.ACTIVE, 5, Instant.parse("2026-08-28T14:59:59Z"),
+                Instant.parse("2026-08-28T03:00:00Z"));
     }
 
     private String acceptUrl() {

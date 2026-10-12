@@ -56,7 +56,8 @@ public class RankingQueryService implements RankingQueryUseCase{
         }
 
         long rank = rankingStore.countHigherThan(score.get()) + 1;
-        return MyRankingView.of(userId, rank, totalCount, score.get());
+        // 지갑 XP 를 한 번 더 읽는다(조회 1회 추가). 랭킹이 지갑을 따라잡았는지 응답에 싣기 위해서다(R-18).
+        return MyRankingView.of(userId, rank, totalCount, score.get(), xpClient.findTotalXp(userId));
     }
 
 
