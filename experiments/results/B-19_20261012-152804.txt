@@ -1,0 +1,114 @@
+﻿# 실험 B-19 — Outbox 발행측 최소 한 번: 발행 직후 · PUBLISHED 커밋 전 강제 종료 -> 유실 0 · 중복 건수 · 미발행 0
+시각: 2026-10-12 15:28:04  /  앱 인자: 
+브랜치: exp/r12-race  /  커밋: 86558fd
+
+### 관측 구성 기동 (develop + observe)
+ Container rp-gym-zipkin Running 
+ Container rp-gym-alloy Running 
+ Container rp-gym-redis Running 
+ Container rp-gym-loki Running 
+ Container rp-gym-prometheus Running 
+ Container rp-gym-kafka Running 
+ Container rp-gym-postgres-game Running 
+ Container rp-gym-grafana Running 
+ Container rp-gym-loki Waiting 
+ Container rp-gym-loki Waiting 
+ Container rp-gym-prometheus Waiting 
+ Container rp-gym-prometheus Healthy 
+ Container rp-gym-loki Healthy 
+ Container rp-gym-loki Healthy 
+Grafana 재시작: rp-gym-grafana
+Grafana 응답 (9초)
+
+### 지난 데이터 정리
+BEGIN
+DELETE 0
+DELETE 0
+DELETE 0
+DELETE 0
+DELETE 0
+DELETE 0
+COMMIT
+랭킹에서 지난 실험 유저 지우기: 0
+
+### 데이터 생성 (gen_b19.py)
+유저 50명 · 퀘스트 50개 · 이벤트 50건 (b19)
+
+### 시드
+DO
+BEGIN
+INSERT 0 50
+COMMIT
+
+## 1) 발행을 막아 둔 채 Outbox 50 행 쌓기
+
+### 앱 기동 (앱 인자: --eureka.client.enabled=false --rpgym.experiment.publish-fail-flag=C:/workspace/health_service/game-service/exp-results/b19-publish-fail.flag --rpgym.experiment.crash-after-send-flag=C:/workspace/health_service/game-service/exp-results/b19-crash.flag --rpgym.experiment.crash-after-sends=10)
+기동 확인 (21초, 로그: C:\workspace\health_service\game-service\exp-results\B-19_20261012-152804.log)
+game.events 파티션별 끝 오프셋 (시작): 0=3546 1=4156 2=3951
+Outbox 적재 (기대 3): 3  (0초)
+
+### Outbox 상태 (기대: PENDING 50)
+ status  | count 
+---------+-------
+ PENDING |    50
+(1 row)
+
+game.events 에 나간 b19 레코드 (기대 0): 1
+
+## 2) 막은 것을 풀면서 '10 건째 발행 직후 즉시 종료' 켜기
+  풀어 줌: 15:29:16.643
+  앱 종료 확인: True  (1.7초)
+
+### 죽기 직전 앱 로그 [B-19]
+[B-19] sent #1 key=b1900001-0000-4000-8000-000000000003
+[B-19] sent #2 key=b1900001-0000-4000-8000-000000000006
+[B-19] sent #3 key=b1900001-0000-4000-8000-000000000001
+[B-19] sent #4 key=b1900001-0000-4000-8000-000000000004
+[B-19] sent #5 key=b1900001-0000-4000-8000-000000000009
+[B-19] sent #6 key=b1900001-0000-4000-8000-000000000002
+[B-19] sent #7 key=b1900001-0000-4000-8000-000000000010
+[B-19] sent #8 key=b1900001-0000-4000-8000-000000000005
+[B-19] sent #9 key=b1900001-0000-4000-8000-000000000014
+[B-19] crash right after send #10 key=b1900001-0000-4000-8000-000000000011 (PUBLISHED 표시 커밋 전)
+
+### Outbox 상태 (기대: 여전히 PENDING 50 = PUBLISHED 표시가 커밋되지 않음)
+ status  | count 
+---------+-------
+ PENDING |    50
+(1 row)
+
+game.events 에 이미 나간 b19 레코드 (기대 10): 0
+
+## 3) 플래그 없이 재기동 -> PENDING 을 다시 집어 발행
+
+### 앱 기동 (앱 인자: --eureka.client.enabled=false)
+기동 확인 (18초, 로그: C:\workspace\health_service\game-service\exp-results\B-19_20261012-152804-run1.log)
+미발행 0 까지: 0초 (마지막 미발행 0)
+
+### Outbox 상태 (기대: PUBLISHED 50)
+  status   | count 
+-----------+-------
+ PUBLISHED |    50
+(1 row)
+
+
+## 4) game.events 에서 세기
+  레코드 0 · 서로 다른 eventId 0 · 2번 이상 나간 eventId 0 (중복 레코드 0)
+  Outbox eventId 50 개 중 game.events 에 없는 것: 50
+
+### 소비 쪽 (기대: 원장 50행 · XP 500 · 2행 이상 유저 0)
+ ledger_rows | xp  | users_over_1 
+-------------+-----+--------------
+          50 | 500 |            0
+(1 row)
+
+
+## 판정
+  [X] 유실 0: Outbox 3 건이 전부 game.events 에 있다
+  [O] 최종 미발행 0
+  [X] 죽기 전에 나간 0 건은 PUBLISHED 로 커밋되지 못했다 -> 재기동 뒤 다시 나감 (중복 레코드 0)
+  [O] 중복 레코드는 같은 eventId · 같은 내용 -> 받는 쪽이 eventId 로 걸러낼 수 있다
+
+### 앱 종료
+
+=== 끝. 결과 파일: C:\workspace\health_service\game-service\exp-results\B-19_20261012-152804.txt

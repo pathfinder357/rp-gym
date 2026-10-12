@@ -1,0 +1,137 @@
+﻿# 실험 B-13 — 새 알림: 대조 불일치 · 랭킹 반영 실패 · 처리 지연 p95 (+ 대조 멈춤) -> Grafana firing -> Slack
+시각: 2026-10-12 13:46:40  /  앱 인자: 
+브랜치: exp/r12-race  /  커밋: 86558fd
+단계: 134  (1 대조 불일치 · 3 랭킹 반영 실패 · 4 처리 지연 p95 · 2 대조 멈춤)
+
+### 관측 구성 기동 (develop + observe, 규칙은 game 만)
+ Container rp-gym-grafana Running 
+ Container rp-gym-kafka Running 
+ Container rp-gym-zipkin Running 
+ Container rp-gym-prometheus Running 
+ Container rp-gym-postgres-game Running 
+ Container rp-gym-redis Running 
+ Container rp-gym-alloy Running 
+ Container rp-gym-loki Running 
+ Container rp-gym-loki Waiting 
+ Container rp-gym-loki Waiting 
+ Container rp-gym-prometheus Waiting 
+ Container rp-gym-loki Healthy 
+ Container rp-gym-prometheus Healthy 
+ Container rp-gym-loki Healthy 
+Grafana 재시작: rp-gym-grafana
+Grafana 응답 (9초)
+
+### 지난 데이터 정리
+BEGIN
+DELETE 0
+DELETE 0
+DELETE 0
+DELETE 0
+DELETE 0
+DELETE 0
+COMMIT
+
+### 데이터 생성 (gen_b13.py)
+만든 파일: 01_seed_b13.sql, 03_p3_ranking / 04_p4_latency .template.txt, 99_cleanup_b13.sql
+
+### 시드
+BEGIN
+INSERT 0 1
+INSERT 0 1
+INSERT 0 1
+INSERT 0 1
+COMMIT
+ b13_quests | b13_wallets 
+------------+-------------
+          2 |           1
+(1 row)
+
+
+### 앱 기동 (앱 인자: --rpgym.reconcile.initial-delay=5000 --rpgym.reconcile.interval=15000 --spring.kafka.consumer.max-poll-records=1 --rpgym.experiment.slow-user-prefix=b1300004- --rpgym.experiment.slow-flag=C:/workspace/health_service/game-service/exp-results/b13-slow.flag --rpgym.experiment.slow-ms=70000 --rpgym.experiment.reconcile-pause-flag=C:/workspace/health_service/game-service/exp-results/b13-reconcile-pause.flag)
+기동 확인 (21초, 로그: C:\workspace\health_service\game-service\exp-results\B-13_20261012-134640.log)
+
+### 랭킹 재구축 (시드 유저까지 ZSET 을 맞춰 두려고)
+{"rebuilt":556}
+기준 상태 대기 (70초)
+
+### 시작 전 규칙 상태 (기대: 전부 inactive)
+[game-consumer-alerts] Game Consumer DLT Detected : state=inactive health=ok
+[game-consumer-alerts] Game Consumer Lag Stuck : state=inactive health=ok
+[game-consumer-alerts] Game Outbox Oldest Pending High : state=inactive health=ok
+[game-consumer-alerts] Game Reconcile Mismatch : state=inactive health=ok
+[game-consumer-alerts] Game Reconcile Not Running : state=inactive health=ok
+[game-consumer-alerts] Game Ranking Update Failed : state=inactive health=ok
+[game-consumer-alerts] Game Pipeline Latency High : state=inactive health=ok
+[game-consumer-alerts] Notification Consumer Lag Stuck : state=inactive health=ok
+
+### 대조 게이지 (기대: 전부 0)
+__name__=rpgym_reconcile_mismatch,check=ledger_wallet,instance=host.docker.internal:19012,job=game-blue => 0
+__name__=rpgym_reconcile_mismatch,check=party_counter,instance=host.docker.internal:19012,job=game-blue => 0
+__name__=rpgym_reconcile_mismatch,check=party_reward,instance=host.docker.internal:19012,job=game-blue => 0
+__name__=rpgym_reconcile_mismatch,check=quest_reward,instance=host.docker.internal:19012,job=game-blue => 0
+__name__=rpgym_reconcile_mismatch,check=ranking,instance=host.docker.internal:19012,job=game-blue => 0
+
+## 1) 대조 불일치 (규칙: 어긋난 수 > 0 이면 즉시. 대조 15초 주기 · 랭킹은 두 번 연속이라 30초)
+주입: 유저 b1300001 지갑 +50 (원장은 그대로)  13:48:25
+  -> 'Game Reconcile Mismatch' = firing  (13:49:26, 시작 후 60초)
+
+### 그 순간 대조 게이지 (기대: ledger_wallet 1 · ranking 1)
+__name__=rpgym_reconcile_mismatch,check=ledger_wallet,instance=host.docker.internal:19012,job=game-blue => 1
+__name__=rpgym_reconcile_mismatch,check=ranking,instance=host.docker.internal:19012,job=game-blue => 1
+해제: 지갑 되돌림  13:49:26
+  -> 'Game Reconcile Mismatch' = inactive  (13:50:26, 시작 후 60초)
+
+## 3) 랭킹 반영 실패 (규칙: 10분 안에 실패 > 0 이면 즉시. resolved 는 10분 창이 지난 뒤)
+
+### Redis 정지
+rp-gym-redis
+주입: Redis 정지 상태에서 퀘스트 완료 이벤트 1건  13:50:27
+  ... 60초: 상태 inactive   => 0
+  -> 'Game Ranking Update Failed' = firing  (13:52:25, 시작 후 116초)
+
+### Redis 다시 켜기
+rp-gym-redis
+redis-cli ping: PONG (3초)
+컨테이너 상태: Up 3 seconds 0.0.0.0:19031->6379/tcp, [::]:19031->6379/tcp
+Redis 로그 마지막 줄: 1:M 12 Oct 2026 04:52:25.763 * Opening AOF incr file appendonly.aof.3.incr.aof on server start | 1:M 12 Oct 2026 04:52:25.763 * Ready to accept connections tcp | 1:M 12 Oct 2026 04:52:25.763 # WARNING: Redis does not require authentication and is not protected by network restrictions. Redis will accept connections from any IP address on any network interface.
+
+### 랭킹 재구축 (복구 절차)
+{"rebuilt":557}
+
+## 4) 처리 지연 p95 (규칙: 처리 지연 p95 > 60초가 10분 지속. 기대 firing 약 11~12분)
+주입: slow 파일 생성(유저 b1300004 이벤트를 70초씩) + 이벤트 12건  13:52:31
+  ... 60초: 상태 pending   => 62.70652251895
+  ... 121초: 상태 pending   => 89.3353197565
+  ... 181초: 상태 pending   => 156.90947187925
+  ... 241초: 상태 pending   => 225.62894861425
+  ... 301초: 상태 pending   => 348.1786821288
+  ... 362초: 상태 pending   => 357.3412790269
+  ... 422초: 상태 pending   => 357.3412790269
+  ... 482초: 상태 pending   => 439.8046511098
+  ... 543초: 상태 pending   => 531.4306200908001
+  -> 'Game Pipeline Latency High' = firing  (14:02:26, 시작 후 593초)
+해제: slow 파일 삭제  14:02:26  (p95 는 5분 창이라 바로 내려가지 않는다)
+  ... 60초: 상태 firing   => 634.96796503933
+  ... 121초: 상태 firing   => 634.96796503933
+  ... 181초: 상태 firing   => 635.88422472914
+  ... 241초: 상태 firing   => 636.80048441895
+  ... 302초: 상태 firing   => 636.80048441895
+  -> 'Game Pipeline Latency High' = inactive  (14:08:27, 시작 후 362초)
+[B-13] slowed 로그 줄 수: 9
+
+### 요약 (주입 -> Grafana firing 까지 초. Slack 은 firing 뒤 약 10초)
+대조 불일치: 60 초 (되돌린 뒤 inactive 60 초) / 랭킹 반영 실패: 116 초 / 처리 지연 p95: 593 초 (해제 뒤 inactive 362 초) / 대조 멈춤: (건너뜀) 초 (해제 뒤 inactive (건너뜀) 초)
+
+### 끝 규칙 상태
+[game-consumer-alerts] Game Consumer DLT Detected : state=inactive health=ok
+[game-consumer-alerts] Game Consumer Lag Stuck : state=inactive health=ok
+[game-consumer-alerts] Game Outbox Oldest Pending High : state=inactive health=ok
+[game-consumer-alerts] Game Reconcile Mismatch : state=inactive health=ok
+[game-consumer-alerts] Game Reconcile Not Running : state=inactive health=ok
+[game-consumer-alerts] Game Ranking Update Failed : state=inactive health=ok
+[game-consumer-alerts] Game Pipeline Latency High : state=inactive health=ok
+[game-consumer-alerts] Notification Consumer Lag Stuck : state=inactive health=ok
+
+### 앱 종료
+
+=== 끝. 결과 파일: C:\workspace\health_service\game-service\exp-results\B-13_20261012-134640.txt

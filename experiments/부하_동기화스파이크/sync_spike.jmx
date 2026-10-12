@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  동기화 정각 스파이크 주입기.
+  health.events 에 HEALTH_ACTIVITY_SYNCED 를 n 건 발행한다. 키는 userId (Health 프로듀서와 같다).
+  속성 (-J 로 넘긴다):
+    bootstrap      kafka:9092
+    n              발행 건수
+    prefix         userId 앞 24자리. 뒤 12자리는 1..n 을 0 으로 채운 번호
+    measuredAt     이벤트의 측정 시각 (정각). 예 2026-09-28T13:00:00+09:00
+    activityDate   2026-09-28
+    sendTimesFile  발행 시작/끝 시각을 적을 파일
+  주의: 스크립트 안에서 ${...} 를 쓰지 않는다. JMeter 가 자기 변수로 먼저 치환해버린다. 그래서 문자열은 + 로 잇는다.
+-->
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="sync spike">
+      <boolProp name="TestPlan.functional_mode">false</boolProp>
+      <boolProp name="TestPlan.serialize_threadgroups">true</boolProp>
+      <boolProp name="TestPlan.tearDown_on_shutdown">true</boolProp>
+      <elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments">
+        <collectionProp name="Arguments.arguments"/>
+      </elementProp>
+    </TestPlan>
+    <hashTree>
+      <SetupThreadGroup guiclass="SetupThreadGroupGui" testclass="SetupThreadGroup" testname="setUp - producer">
+        <stringProp name="ThreadGroup.on_sample_error">stoptest</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController">
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+          <stringProp name="LoopController.loops">1</stringProp>
+        </elementProp>
+        <stringProp name="ThreadGroup.num_threads">1</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">0</stringProp>
+        <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
+      </SetupThreadGroup>
+      <hashTree>
+        <JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="create producer">
+          <stringProp name="scriptLanguage">groovy</stringProp>
+          <stringProp name="parameters"></stringProp>
+          <stringProp name="filename"></stringProp>
+          <stringProp name="cacheKey">true</stringProp>
+          <stringProp name="script">import org.apache.kafka.clients.producer.KafkaProducer
+import org.apache.kafka.common.serialization.StringSerializer
+
+def conf = new Properties()
+conf.put("bootstrap.servers", props.getProperty("bootstrap", "kafka:9092"))
+conf.put("key.serializer", StringSerializer.class.getName())
+conf.put("value.serializer", StringSerializer.class.getName())
+// Health 프로듀서와 같은 전달 보장
+conf.put("acks", "all")
+conf.put("enable.idempotence", "true")
+// 한꺼번에 쏟아붓는 것이 목적이라 조금 모아서 보낸다
+conf.put("linger.ms", "5")
+def p = new KafkaProducer(conf)
+// 첫 send 전에 메타데이터를 받아둔다. 안 그러면 첫 건 지연이 발행 시간에 섞인다
+p.partitionsFor("health.events")
+props.put("producer", p)</stringProp>
+        </JSR223Sampler>
+        <hashTree/>
+      </hashTree>
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="burst">
+        <stringProp name="ThreadGroup.on_sample_error">stoptest</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController">
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+          <stringProp name="LoopController.loops">1</stringProp>
+        </elementProp>
+        <stringProp name="ThreadGroup.num_threads">1</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">0</stringProp>
+        <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
+      </ThreadGroup>
+      <hashTree>
+        <JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="send HEALTH_ACTIVITY_SYNCED">
+          <stringProp name="scriptLanguage">groovy</stringProp>
+          <stringProp name="parameters"></stringProp>
+          <stringProp name="filename"></stringProp>
+          <stringProp name="cacheKey">true</stringProp>
+          <stringProp name="script">import org.apache.kafka.clients.producer.ProducerRecord
+
+// 샘플 하나 안에서 n 건을 전부 보낸다.
+// 반복 횟수로 n 을 돌리면 JMeter 가 건마다 샘플을 만들고 결과 파일에 한 줄씩 쓴다.
+// 2026-09-28 첫 회차에서 그 오버헤드 때문에 발행이 초당 190건에 묶여,
+// 컨슈머가 아니라 부하 생성기의 속도를 재고 있었다.
+// 발행 시작 시각은 여기서 찍는다. setUp 에서 찍으면 이 스크립트의 Groovy 컴파일 시간(0.5코어에서 수 초)이 섞인다
+props.put("sendStart", String.valueOf(System.currentTimeMillis()))
+def p = props.get("producer")
+int n = Integer.parseInt(props.getProperty("n"))
+String prefix = props.getProperty("prefix")
+String date = props.getProperty("activityDate")
+String measuredAt = props.getProperty("measuredAt")
+for (int i = 1; i &lt;= n; i++) {
+    String uid = prefix + String.format("%012d", i)
+    String eid = "77777777" + uid.substring(8)
+    String json = "{\"eventId\":\"" + eid + "\"" +
+        ",\"eventType\":\"HEALTH_ACTIVITY_SYNCED\"" +
+        ",\"userId\":\"" + uid + "\"" +
+        ",\"data\":{\"activityDate\":\"" + date + "\"" +
+        ",\"measuredAt\":\"" + measuredAt + "\"" +
+        ",\"cumulative\":{\"steps\":2000,\"activeMinutes\":20,\"activeCalories\":100}}}"
+    // 비동기 발행. 응답은 tearDown 의 flush 에서 한꺼번에 기다린다
+    p.send(new ProducerRecord("health.events", uid, json))
+}
+SampleResult.setResponseMessage("sent " + n)</stringProp>
+        </JSR223Sampler>
+        <hashTree/>
+      </hashTree>
+      <PostThreadGroup guiclass="PostThreadGroupGui" testclass="PostThreadGroup" testname="tearDown - flush">
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController">
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+          <stringProp name="LoopController.loops">1</stringProp>
+        </elementProp>
+        <stringProp name="ThreadGroup.num_threads">1</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">0</stringProp>
+        <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
+      </PostThreadGroup>
+      <hashTree>
+        <JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="flush and close">
+          <stringProp name="scriptLanguage">groovy</stringProp>
+          <stringProp name="parameters"></stringProp>
+          <stringProp name="filename"></stringProp>
+          <stringProp name="cacheKey">true</stringProp>
+          <stringProp name="script">def p = props.get("producer")
+// 여기서 끝나면 브로커가 n 건을 전부 받았다는 뜻이다 (acks=all)
+p.flush()
+long end = System.currentTimeMillis()
+p.close()
+new File(props.getProperty("sendTimesFile")).text =
+    "send_start_ms=" + props.get("sendStart") + "\nsend_end_ms=" + end + "\n"</stringProp>
+        </JSR223Sampler>
+        <hashTree/>
+      </hashTree>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>

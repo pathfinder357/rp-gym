@@ -1,0 +1,1 @@
+b1200003-0000-4000-8000-000000000001|{"eventId":"b1200009-0000-4000-8000-000000000300","eventType":"HEALTH_ACTIVITY_SYNCED","userId":"b1200003-0000-4000-8000-000000000001","data":{"activityDate":"__TODAY__","measuredAt":"__NOW__","cumulative":{"steps":2000,"activeMinutes":0,"activeCalories":0}}}

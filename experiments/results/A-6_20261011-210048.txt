@@ -1,0 +1,166 @@
+﻿# 실험 A-6 — DLT 재처리: 버그 수정 뒤 반영 · 이미 처리 · 어제 · 만료 제안은 보상 0 · 깨진 JSON 은 상한에서 멈춤
+시각: 2026-10-11 21:00:48  /  앱 인자: 
+브랜치: exp/r12-race  /  커밋: 23d5f83
+
+### 인프라 기동
+ Container rp-gym-kafka Running 
+ Container rp-gym-postgres-game Running 
+ Container rp-gym-redis Running 
+
+### DLT 토픽 (없으면 만든다)
+WARNING: Due to limitations in metric names, topics with a period ('.') or underscore ('_') could collide. To avoid issues it is best to use either, but not both.
+
+### 재처리 그룹 위치를 DLT 끝으로
+
+GROUP                   TOPIC             PARTITION  NEW-OFFSET
+game-service-dlt-replay health.events.DLT 0          0
+game-service-dlt-replay health.events.DLT 2          0
+game-service-dlt-replay health.events.DLT 1          0
+
+### 지난 데이터 정리
+BEGIN
+DELETE 0
+DELETE 0
+DELETE 0
+DELETE 0
+DELETE 0
+DELETE 0
+DELETE 0
+COMMIT
+
+### 데이터 생성 (gen_a6.py)
+1단계(health.events) 21건: F 10 + D 10 + 깨진 JSON 1 / DLT 직접 30건: D 10 + Y 10 + S 10
+DLT 기대: 1단계 뒤 F 10 + B 1 = 11건 쌓임, 직접 넣은 30건까지 41건 -> 첫 재처리 41건 되돌림
+만든 파일: 01_seed_a6.sql, 02_phase1.template.txt, 03_dlt_direct.template.txt, 04_verify_a6.sql, 99_cleanup_a6.sql
+
+### 시드
+DO
+BEGIN
+INSERT 0 30
+COMMIT
+ a6_quests 
+-----------
+        30
+(1 row)
+
+
+이벤트 시각 치환: __NOW__=2026-10-11T21:00:57+09:00  __NOW_MINUS_31__=2026-10-11T20:29:57+09:00  __TODAY__=2026-10-11  __YESTERDAY__=2026-10-10  __YESTERDAY_2300__=2026-10-10T23:00:00+09:00
+
+## 1단계: 버그가 있는 버전 (F 유저 이벤트에서 일부러 예외)
+
+### 앱 기동 (앱 인자: --rpgym.reconcile.initial-delay=5000 --rpgym.reconcile.interval=15000 --rpgym.experiment.fail-user-prefix=a6000001-0000-4000-8000-0000000001)
+기동 확인 (21초, 로그: C:\workspace\health_service\game-service\exp-results\A-6_20261011-210048.log)
+DLT 끝 오프셋 합 (시작): 0
+
+### 1단계 발행: F 10 + D 10 + 깨진 JSON 1 -> health.events
+Warning: --property is deprecated and will be removed in a future version. Use --reader-property instead.
+DLT 에 11건 쌓임 · D 완료 10 (42초)
+
+### DLT 직접 넣기: D 10(같은 eventId) + Y 10(어제) + S 10(31분 지난 제안)
+Warning: --property is deprecated and will be removed in a future version. Use --reader-property instead.
+DLT 증가 합계 (기대 41): 41
+
+### 1단계 끝 상태 (기대: F ACTIVE 10 · D COMPLETED 10 · Y ACTIVE 10)
+    grp     |  status   | count 
+------------+-----------+-------
+ 0000000001 | ACTIVE    |    10
+ 0000000002 | COMPLETED |    10
+ 0000000003 | ACTIVE    |    10
+(3 rows)
+
+
+### DLT 적재 카운터 (기대: 11 = F 10 + 깨진 JSON 1)
+rpgym_kafka_consumer_dlt_total 11.0
+[A-6] injected bug 로그 줄 수 (F 10건 × 시도 4번 = 40 근처): 0
+
+### 앱 종료 (= 버그 수정 배포 준비)
+
+## 2단계: 버그를 고친 버전 (실험 설정 없이)
+
+### 앱 기동 (앱 인자: --rpgym.reconcile.initial-delay=5000 --rpgym.reconcile.interval=15000)
+기동 확인 (36초, 로그: C:\workspace\health_service\game-service\exp-results\A-6_20261011-210048-run1.log)
+
+### 재처리 dryRun (보기만)
+dryRun=True replayed=0 skipped=0 seen=41
+  30건  [action, 원래 예외, replayCount] = WOULD_REPLAY, -, 0
+  11건  [action, 원래 예외, replayCount] = WOULD_REPLAY, ListenerExecutionFailedException, 0
+
+### 재처리 1회차 (기대: replayed 41)
+dryRun=False replayed=43 skipped=1 seen=44
+  30건  [action, 원래 예외, replayCount] = REPLAYED, -, 0
+  11건  [action, 원래 예외, replayCount] = REPLAYED, ListenerExecutionFailedException, 0
+  1건  [action, 원래 예외, replayCount] = REPLAYED, ListenerExecutionFailedException, 1
+  1건  [action, 원래 예외, replayCount] = REPLAYED, ListenerExecutionFailedException, 2
+  1건  [action, 원래 예외, replayCount] = SKIPPED_LIMIT, ListenerExecutionFailedException, 3
+처리 대기 20초
+
+### 재처리 2회차 (기대: 깨진 JSON 1건 replayed (replayCount 1 -> 2))
+dryRun=False replayed=0 skipped=0 seen=0
+처리 대기 10초
+
+### 재처리 3회차 (기대: 깨진 JSON 1건 replayed (replayCount 2 -> 3))
+dryRun=False replayed=0 skipped=0 seen=0
+처리 대기 10초
+
+### 재처리 4회차 (기대: 깨진 JSON 1건 skipped (replayCount 3 = 상한))
+dryRun=False replayed=0 skipped=0 seen=0
+처리 대기 10초
+
+### 재처리 카운터
+rpgym_kafka_dlt_replayed_total{result="replayed"} 43.0
+rpgym_kafka_dlt_replayed_total{result="skipped_limit"} 1.0
+
+### DLT 적재 카운터 (2단계 앱 기준: 깨진 JSON 이 돌아온 3)
+rpgym_kafka_consumer_dlt_total 3.0
+대조 두 주기 대기 (35초)
+
+### 대조 게이지 (기대: 전부 0)
+rpgym_reconcile_failed_total{stage="ranking"} 0.0
+rpgym_reconcile_failed_total{stage="sql"} 0.0
+rpgym_reconcile_last_success_timestamp 1.791720268E9
+rpgym_reconcile_mismatch{check="ledger_wallet"} 0.0
+rpgym_reconcile_mismatch{check="party_counter"} 0.0
+rpgym_reconcile_mismatch{check="party_reward"} 0.0
+rpgym_reconcile_mismatch{check="quest_reward"} 0.0
+rpgym_reconcile_mismatch{check="ranking"} 0.0
+
+### 검증 (04_verify_a6.sql)
+=== F. bug -> DLT -> fix -> replay (expect COMPLETED 10, ledger 10 rows / 100 xp) ===
+ completed | ledger_rows | ledger_xp 
+-----------+-------------+-----------
+        10 |          10 |       100
+(1 row)
+
+=== D. already processed, replayed again (expect COMPLETED 10, ledger still 10 rows / 100 xp) ===
+ completed | ledger_rows | ledger_xp 
+-----------+-------------+-----------
+        10 |          10 |       100
+(1 row)
+
+=== Y. yesterday events replayed (expect ACTIVE 10, last_applied NULL 10, ledger 0) ===
+ active | watermark_null | ledger_rows 
+--------+----------------+-------------
+     10 |             10 |           0
+(1 row)
+
+=== S. expired suggestions replayed (expect stored 0, card 0) ===
+ stored | card 
+--------+------
+      0 |    0
+(1 row)
+
+=== all a6 users: wallet <> ledger sum (expect 0 rows) ===
+ user_id | wallet | ledger 
+---------+--------+--------
+(0 rows)
+
+=== QUEST_COMPLETED events in outbox (expect 20: F 10 + D 10) ===
+ quest_completed 
+-----------------
+              20
+(1 row)
+
+
+### 앱 종료
+
+=== 끝. 결과 파일: C:\workspace\health_service\game-service\exp-results\A-6_20261011-210048.txt

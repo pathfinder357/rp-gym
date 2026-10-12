@@ -1,0 +1,145 @@
+﻿# 실험 B-12 — 알림 3종: DLT 적재 · 컨슈머 지연 · Outbox 최장 대기 -> Grafana firing -> Slack
+시각: 2026-10-12 12:12:32  /  앱 인자: 
+브랜치: exp/r12-race  /  커밋: 86558fd
+
+### 관측 구성 기동 (develop + observe, 규칙은 game 만)
+ Container rp-gym-zipkin Running 
+ Container rp-gym-redis Running 
+ Container rp-gym-alloy Running 
+ Container rp-gym-loki Running 
+ Container rp-gym-postgres-game Running 
+ Container rp-gym-kafka Running 
+ Container rp-gym-prometheus Running 
+ Container rp-gym-grafana Recreate 
+ Container rp-gym-grafana Recreated 
+ Container rp-gym-loki Waiting 
+ Container rp-gym-loki Waiting 
+ Container rp-gym-prometheus Waiting 
+ Container rp-gym-loki Healthy 
+ Container rp-gym-loki Healthy 
+ Container rp-gym-prometheus Healthy 
+ Container rp-gym-grafana Starting 
+ Container rp-gym-grafana Started 
+Grafana 응답 (9초)
+
+### 지난 데이터 정리
+BEGIN
+DELETE 0
+DELETE 0
+DELETE 0
+DELETE 0
+DELETE 0
+DELETE 0
+COMMIT
+
+### 데이터 생성 (gen_b12.py)
+만든 파일: 01_seed_b12.sql, 02_p1_dlt / 03_p2_lag / 04_p3_outbox .template.txt, 99_cleanup_b12.sql
+
+### 시드
+BEGIN
+INSERT 0 1
+COMMIT
+ b12_quests 
+------------
+          1
+(1 row)
+
+
+### 앱 기동 (앱 인자: --rpgym.experiment.stuck-user-prefix=b1200002- --rpgym.experiment.stuck-flag=C:/workspace/health_service/game-service/exp-results/b12-stuck.flag --rpgym.experiment.publish-fail-flag=C:/workspace/health_service/game-service/exp-results/b12-publish-fail.flag)
+기동 확인 (24초, 로그: C:\workspace\health_service\game-service\exp-results\B-12_20261012-121232.log)
+기준 상태 대기 (70초: 규칙이 한 번 이상 평가되게)
+
+### 시작 전 규칙 상태 (기대: 전부 inactive)
+[game-consumer-alerts] Game Consumer DLT Detected : state=inactive health=ok
+[game-consumer-alerts] Game Consumer Lag Stuck : state=inactive health=ok
+[game-consumer-alerts] Game Outbox Oldest Pending High : state=inactive health=ok
+[game-consumer-alerts] Game Reconcile Mismatch : state=inactive health=ok
+[game-consumer-alerts] Game Reconcile Not Running : state=inactive health=ok
+[game-consumer-alerts] Game Ranking Update Failed : state=inactive health=ok
+[game-consumer-alerts] Game Pipeline Latency High : state=inactive health=ok
+[game-consumer-alerts] Notification Consumer Lag Stuck : state=inactive health=ok
+
+## 1) DLT 적재 알림 (규칙: 10분 안에 DLT 적재 > 0 이면 즉시, Slack 은 firing 뒤 group_wait 10초)
+주입: 깨진 JSON 1건  12:14:20
+  -> 'Game Consumer DLT Detected' = firing  (12:15:23, 시작 후 60초)
+
+## 2) 컨슈머 지연 알림 (규칙: lag 이 10분 내내 0 으로 안 내려오면. 기대 firing 약 10~11분)
+주입: stuck 파일 생성 + 같은 유저 이벤트 6건  12:15:23
+  ... 60초: 상태 inactive   => 0
+  ... 121초: 상태 inactive   => 0
+  ... 181초: 상태 inactive   => 0
+  ... 241초: 상태 inactive   => 0
+  ... 301초: 상태 inactive   => 0
+  ... 362초: 상태 inactive   => 0
+  ... 422초: 상태 inactive   => 0
+  ... 482초: 상태 inactive   => 0
+  ... 543초: 상태 inactive   => 0
+  ... 603초: 상태 inactive   => 0
+  ... 663초: 상태 inactive   => 0
+  ... 724초: 상태 inactive   => 0
+  ... 784초: 상태 inactive   => 0
+  ... 844초: 상태 inactive   => 0
+  ... 904초: 상태 inactive   => 0
+  ... 960초: 상태 inactive   => 0
+  ... 1020초: 상태 inactive   => 0
+  ... 1080초: 상태 inactive   => 0
+  ... 1141초: 상태 inactive   => 0
+  ... 1201초: 상태 inactive   => 0
+  !!! 1200초가 지나도 'Game Consumer Lag Stuck' 이 firing 가 아니다 (마지막 상태 inactive)
+해제: stuck 파일 삭제  12:35:26
+  -> 'Game Consumer Lag Stuck' = inactive  (12:35:26, 시작 후 0초)
+
+## 3) Outbox 최장 대기 알림 (규칙: 가장 오래된 PENDING 이 60초 초과인 상태가 2분 지속. 기대 firing 약 3~4분)
+주입: 발행 실패 파일 생성 + 퀘스트 완료 이벤트 1건  12:35:26
+  ... 61초: 상태 inactive   => 49.294
+  ... 122초: 상태 pending   => 109.291
+  ... 182초: 상태 pending   => 169.288
+  -> 'Game Outbox Oldest Pending High' = firing  (12:39:25, 시작 후 237초)
+해제: 발행 실패 파일 삭제  12:39:25
+  -> 'Game Outbox Oldest Pending High' = inactive  (12:40:26, 시작 후 60초)
+
+### Outbox 행 (기대: QUEST_COMPLETED 1건 PUBLISHED)
+   event_type    |  status   | created  | published 
+-----------------+-----------+----------+-----------
+ QUEST_COMPLETED | PUBLISHED | 12:35:28 | 12:39:26
+(1 row)
+
+
+### 요약 (주입 -> Grafana firing 까지 초. Slack 도착은 firing 뒤 약 10초 = group_wait)
+DLT 적재: 60 초 / 컨슈머 지연: -1 초 (해제 후 inactive 까지 0 초) / Outbox 최장 대기: 237 초 (해제 후 inactive 까지 60 초)
+
+### Grafana 로그: 알림 발송 흔적 (slack · notify)
+logger=backgroundsvcs.managerAdapter t=2026-10-12T03:12:37.991758135Z level=info msg=starting module=*notifications.NotificationService
+logger=ngalert.notifier component=alertmanager orgID=1 t=2026-10-12T03:13:38.060808605Z level=info msg="Applying new configuration to Alertmanager" configHash="{14519254120625981992 15062921927464924330 11535544170606148457 1343157387507078592 10278876130067529486 18055517282398016468 5144611013662998819}"
+logger=ngalert.notifier t=2026-10-12T03:13:38.060854206Z level=info component=alertmanager orgID=1 msg="template definitions loaded" mimir=0 grafana=0 total=0 maxTemplateOutput=10485760
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:15:20.026932302Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:16:20.028282756Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:17:20.030834142Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:18:20.027637497Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:19:20.027333308Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:20:20.02806106Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:21:20.027089881Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:22:20.026658296Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:23:20.027320333Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:24:20.02770996Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:25:20.024476435Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:26:20.02306727Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:27:20.02498207Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:28:20.026209165Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:29:20.025833063Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:30:20.024753893Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:31:20.026072824Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:32:20.0253988Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:33:20.028247683Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:34:20.024095867Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:35:20.024601398Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:36:20.034236548Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:37:20.028967261Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:38:20.025457032Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-dlt-detected org_id=1 t=2026-10-12T03:39:20.028696417Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-outbox-oldest-pending-high org_id=1 t=2026-10-12T03:39:22.524565272Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-outbox-oldest-pending-high org_id=1 t=2026-10-12T03:40:22.5283111Z level=info msg="Sending alerts to local notifier" count=1
+
+### 앱 종료
+
+=== 끝. 결과 파일: C:\workspace\health_service\game-service\exp-results\B-12_20261012-121232.txt

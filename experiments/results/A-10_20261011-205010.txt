@@ -1,0 +1,152 @@
+﻿# 실험 A-10 — 랭킹 재구축 성능: 10만 명, 방식 · 배치 크기별 재구축 시간과 재구축 중 ZSCORE 지연
+시각: 2026-10-11 20:50:10  /  앱 인자: 
+브랜치: exp/r12-race  /  커밋: 23d5f83
+
+### 인프라 기동
+ Container rp-gym-kafka Running 
+ Container rp-gym-redis Running 
+ Container rp-gym-postgres-game Running 
+
+### 시드 10만 명 (지난 회차 정리 포함)
+BEGIN
+DELETE 0
+DELETE 0
+INSERT 0 100000
+INSERT 0 100000
+COMMIT
+ANALYZE
+ANALYZE
+ a10_characters | a10_wallets | all_characters 
+----------------+-------------+----------------
+         100000 |      100000 |         100525
+(1 row)
+
+
+### 실행 계획 (R-22 전후 쿼리)
+=== 예전 쿼리 (characters UNION wallets 를 먼저 만든 뒤 고른다) ===
+                                                QUERY PLAN                                                 
+-----------------------------------------------------------------------------------------------------------
+ Limit (actual time=111.933..112.022 rows=1000 loops=1)
+   Buffers: shared hit=2716
+   ->  Sort (actual time=111.931..111.970 rows=1000 loops=1)
+         Sort Key: characters.user_id
+         Sort Method: top-N heapsort  Memory: 128kB
+         Buffers: shared hit=2716
+         ->  Hash Right Join (actual time=66.376..104.961 rows=50125 loops=1)
+               Hash Cond: (w.user_id = characters.user_id)
+               Buffers: shared hit=2713
+               ->  Seq Scan on wallets w (actual time=0.014..9.987 rows=100525 loops=1)
+                     Buffers: shared hit=838
+               ->  Hash (actual time=65.865..65.868 rows=50125 loops=1)
+                     Buckets: 131072  Batches: 1  Memory Usage: 3374kB
+                     Buffers: shared hit=1875
+                     ->  HashAggregate (actual time=49.321..56.215 rows=50125 loops=1)
+                           Group Key: characters.user_id
+                           Batches: 1  Memory Usage: 3601kB
+                           Buffers: shared hit=1875
+                           ->  Append (actual time=0.062..26.621 rows=100250 loops=1)
+                                 Buffers: shared hit=1875
+                                 ->  Seq Scan on characters (actual time=0.061..11.897 rows=50125 loops=1)
+                                       Filter: (user_id > '88888888-0000-4000-8000-000000050000'::uuid)
+                                       Rows Removed by Filter: 50400
+                                       Buffers: shared hit=1037
+                                 ->  Seq Scan on wallets (actual time=0.049..8.536 rows=50125 loops=1)
+                                       Filter: (user_id > '88888888-0000-4000-8000-000000050000'::uuid)
+                                       Rows Removed by Filter: 50400
+                                       Buffers: shared hit=838
+ Planning:
+   Buffers: shared hit=104
+ Planning Time: 0.461 ms
+ Execution Time: 113.297 ms
+(32 rows)
+
+=== 지금 쿼리 (R-22: 테이블마다 인덱스로 1,000명씩 읽고 합친다) ===
+                                                           QUERY PLAN                                                           
+--------------------------------------------------------------------------------------------------------------------------------
+ Limit (actual time=0.042..1.042 rows=1000 loops=1)
+   Buffers: shared hit=41
+   ->  GroupAggregate (actual time=0.042..0.977 rows=1000 loops=1)
+         Group Key: characters.user_id
+         Buffers: shared hit=41
+         ->  Merge Append (actual time=0.037..0.673 rows=2000 loops=1)
+               Sort Key: characters.user_id
+               Buffers: shared hit=41
+               ->  Limit (actual time=0.028..0.292 rows=1000 loops=1)
+                     Buffers: shared hit=22
+                     ->  Index Only Scan using uk_characters_user_id on characters (actual time=0.028..0.241 rows=1000 loops=1)
+                           Index Cond: (user_id > '88888888-0000-4000-8000-000000050000'::uuid)
+                           Heap Fetches: 1000
+                           Buffers: shared hit=22
+               ->  Limit (actual time=0.007..0.228 rows=1000 loops=1)
+                     Buffers: shared hit=19
+                     ->  Index Scan using pk_wallets on wallets (actual time=0.007..0.173 rows=1000 loops=1)
+                           Index Cond: (user_id > '88888888-0000-4000-8000-000000050000'::uuid)
+                           Buffers: shared hit=19
+ Planning:
+   Buffers: shared hit=3
+ Planning Time: 0.109 ms
+ Execution Time: 1.101 ms
+(23 rows)
+
+
+### 앱 기동 (로그: C:\workspace\health_service\game-service\exp-results\A-10_20261011-205010.log, 앱 인자: --rpgym.reconcile.enabled=false)
+기동 확인 (21초)
+
+### 예열 (참고만)  (mode=keyset, batch=1000)
+랭킹에서 실험 유저 지우기: 0
+{"mode":"keyset","batchSize":1000,"probeIdle":{"count":4518,"p50us":559,"p95us":717,"p99us":901,"p999us":1250,"maxUs":370933},"probeDuring":{"count":2966,"p50us":592,"p95us":1560,"p99us":2601,"p999us":5752,"maxUs":11479},"rebuilt":100525,"elapsedMs":2117}
+호출 전체 시간(실행기 측정): 5252 ms
+ZCARD ranking:global: 100525
+
+### 고치기 전 · 배치 1,000  (mode=legacy, batch=1000)
+랭킹에서 실험 유저 지우기: 100000
+{"mode":"legacy","batchSize":1000,"probeIdle":{"count":5206,"p50us":554,"p95us":701,"p99us":874,"p999us":1247,"maxUs":4069},"probeDuring":{"count":105118,"p50us":643,"p95us":782,"p99us":962,"p999us":2429,"maxUs":46931},"rebuilt":100525,"elapsedMs":69688}
+호출 전체 시간(실행기 측정): 72710 ms
+ZCARD ranking:global: 100525
+
+### R-22 전 쿼리 · 배치 1,000  (mode=keyset-union, batch=1000)
+랭킹에서 실험 유저 지우기: 100000
+{"mode":"keyset-union","batchSize":1000,"probeIdle":{"count":5392,"p50us":544,"p95us":648,"p99us":739,"p999us":946,"maxUs":1461},"probeDuring":{"count":12915,"p50us":568,"p95us":711,"p99us":1538,"p999us":3328,"maxUs":9273},"rebuilt":100525,"elapsedMs":7788}
+호출 전체 시간(실행기 측정): 10801 ms
+ZCARD ranking:global: 100525
+
+### 지금 · 배치 100  (mode=keyset, batch=100)
+랭킹에서 실험 유저 지우기: 100000
+{"mode":"keyset","batchSize":100,"probeIdle":{"count":5304,"p50us":548,"p95us":675,"p99us":816,"p999us":1075,"maxUs":5122},"probeDuring":{"count":5095,"p50us":599,"p95us":778,"p99us":943,"p999us":1986,"maxUs":5211},"rebuilt":100525,"elapsedMs":3192}
+호출 전체 시간(실행기 측정): 6204 ms
+ZCARD ranking:global: 100525
+
+### 지금 · 배치 1,000  (mode=keyset, batch=1000)
+랭킹에서 실험 유저 지우기: 100000
+{"mode":"keyset","batchSize":1000,"probeIdle":{"count":5415,"p50us":543,"p95us":640,"p99us":718,"p999us":826,"maxUs":2224},"probeDuring":{"count":2552,"p50us":576,"p95us":1527,"p99us":2258,"p999us":3485,"maxUs":5230},"rebuilt":100525,"elapsedMs":1740}
+호출 전체 시간(실행기 측정): 4753 ms
+ZCARD ranking:global: 100525
+
+### 지금 · 배치 10,000  (mode=keyset, batch=10000)
+랭킹에서 실험 유저 지우기: 100000
+{"mode":"keyset","batchSize":10000,"probeIdle":{"count":5261,"p50us":550,"p95us":686,"p99us":814,"p999us":1162,"maxUs":5041},"probeDuring":{"count":2362,"p50us":566,"p95us":704,"p99us":1881,"p999us":26189,"maxUs":35302},"rebuilt":100525,"elapsedMs":1662}
+호출 전체 시간(실행기 측정): 4675 ms
+ZCARD ranking:global: 100525
+
+### 요약
+설정                       대상 재구축ms 평소p99us 중p50us 중p99us 중p999us 중maxUs    탐침수
+--                       -- ----- ------- ------ ------ ------- ------    ---
+예열 (참고만)             100525  2117     901    592   2601    5752  11479   2966
+고치기 전 · 배치 1,000     100525 69688     874    643    962    2429  46931 105118
+R-22 전 쿼리 · 배치 1,000 100525  7788     739    568   1538    3328   9273  12915
+지금 · 배치 100          100525  3192     816    599    943    1986   5211   5095
+지금 · 배치 1,000        100525  1740     718    576   2258    3485   5230   2552
+지금 · 배치 10,000       100525  1662     814    566   1881   26189  35302   2362
+
+### 정리
+랭킹에서 실험 유저 지우기: 100000
+
+### DB 실험 데이터 지우기
+BEGIN
+DELETE 100000
+DELETE 100000
+COMMIT
+
+### 앱 종료
+
+=== 끝. 결과 파일: C:\workspace\health_service\game-service\exp-results\A-10_20261011-205010.txt
