@@ -60,7 +60,10 @@ spring:
       # Outbox payload를 문자열 원문 그대로 싣는다. 직렬화기가 값을 다시 만들지 않도록 String으로 고정
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
-      # "보냈다"의 기준. all = 복제본까지 받아야 성공. 1이면 리더만 받고 조용히 유실될 수 있다
+      # "보냈다"의 기준. all = 동기화된 복제본(ISR) 전부가 받아야 성공. 1이면 리더만 받고 조용히 유실될 수 있다
+      # (R-14) 주의: develop · prod 는 브로커 1대(복제 계수 1)라 ISR 이 리더 하나뿐이다. 그래서 지금 all 은
+      # 사실상 1 과 같은 보장이다. 호스트가 갑자기 꺼지면 응답까지 받은 메시지도 잃을 수 있다
+      # (Kafka 는 메시지마다 fsync 하지 않는다). 복제가 있는 구성은 docker-compose-kafka-ha.yml(로컬 실험용)
       acks: all
       properties:
         # 프로듀서 내부 재시도로 인한 중복 적재 방지 + 파티션 내 순서 보장
