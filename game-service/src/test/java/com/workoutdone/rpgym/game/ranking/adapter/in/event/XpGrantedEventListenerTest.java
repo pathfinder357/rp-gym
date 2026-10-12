@@ -1,6 +1,8 @@
 package com.workoutdone.rpgym.game.ranking.adapter.in.event;
 
+import com.workoutdone.rpgym.game.ranking.application.RankingMetrics;
 import com.workoutdone.rpgym.game.ranking.application.RankingService;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import com.workoutdone.rpgym.game.xp.application.XpGranted;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -17,11 +19,13 @@ class XpGrantedEventListenerTest {
 
     private RankingService rankingService;
     private XpGrantedEventListener sut;
+    private SimpleMeterRegistry meterRegistry;
 
     @BeforeEach
     void setUp() {
         rankingService = mock(RankingService.class);
-        sut = new XpGrantedEventListener(rankingService);
+        meterRegistry = new SimpleMeterRegistry();
+        sut = new XpGrantedEventListener(rankingService, new RankingMetrics(meterRegistry));
     }
 
     @DisplayName("XpGranted 를 받으면 해당 사용자의 랭킹을 갱신한다")
@@ -45,5 +49,9 @@ class XpGrantedEventListenerTest {
 
         assertThatCode(() -> sut.on(new XpGranted(userId)))
                 .doesNotThrowAnyException();
+        // R-20: 삼키되 세어 둔다
+        org.assertj.core.api.Assertions.assertThat(
+                meterRegistry.get("rpgym.ranking.update.failed").tag("stage", "listener").counter().count())
+                .isEqualTo(1.0);
     }
 }
