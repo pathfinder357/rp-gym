@@ -18,9 +18,9 @@ import com.workoutdone.rpgym.game.quest.domain.vo.Snapshot;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
-import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
 import java.util.Optional;
 
 /**
@@ -38,6 +38,9 @@ import java.util.Optional;
  *   그 밖의 예외(버그 등)                 -> 서비스 예외 그대로     -> 몇 번 재시도 후 DLT
  * 예전에는 계약 위반을 로그만 남기고 정상 리턴했다. 파티션은 안 막히지만 메시지가 조용히 사라졌다.
  * 알 수 없는 eventType 은 여전히 로그만 남기고 넘긴다. Health 가 새 타입을 추가해도 Game 이 멈추면 안 된다.
+ *
+ * (R-16) Kafka 리스너 진입점은 HealthEventListener 로 옮겼다. 레코드 timestamp 로 지연을 재야 해서
+ * ConsumerRecord 를 받는 쪽이 필요했고, 이 클래스는 문자열만 받는 형태 그대로 둔다(테스트가 직접 부른다).
  */
 @Slf4j
 @Component
@@ -57,8 +60,10 @@ public class HealthEventConsumer {
     // inbound(Driving) HEALTH_ACTIVITY_SYNCED, QUEST_SUGGESTED 트랜잭션을 시작하기 위한 어댑터
     // 순서대로 T1, T2로 명명
     // T1은 컨슈머가 apply, T2는 컨슈머가 store
-    @KafkaListener(topics = "${rpgym.kafka.health-events-topic}")
-    public void consume(String message) {
+    /**
+     * @return HEALTH_ACTIVITY_SYNCED 를 정상 처리했으면 그 스냅샷의 측정 시각(화면 지연 지표용), 그 밖에는 빈 값
+     */
+    public Optional<Instant> consume(String message) {
         HealthEventEnvelope envelope;
         try {
             envelope = objectMapper.readValue(message, HealthEventEnvelope.class);
@@ -79,7 +84,7 @@ public class HealthEventConsumer {
         MDC.put("eventId", String.valueOf(envelope.eventId()));
         MDC.put("userId", String.valueOf(envelope.userId()));
         try {
-            dispatch(envelope); // 메서드 안에 찍히는 모든 로그에 eventId, userId 붙음
+            return dispatch(envelope); // 메서드 안에 찍히는 모든 로그에 eventId, userId 붙음
         } finally {
             MDC.remove("eventId"); // 서버나 메시지 컨슈머는 성능때문에 스레드 풀 방식으로 스레드 재사용
             // MDC를 지우지 않으면 다음 다른 메시지 처리할때 이전 메시지의 MDC 정보가 남아서 지워야함.
@@ -87,17 +92,20 @@ public class HealthEventConsumer {
         }
     }
 
-    private void dispatch(HealthEventEnvelope envelope) {
+    private Optional<Instant> dispatch(HealthEventEnvelope envelope) {
         switch (envelope.eventType()) {
-            case HEALTH_ACTIVITY_SYNCED -> applySnapshot(envelope);
+            case HEALTH_ACTIVITY_SYNCED -> {
+                return Optional.of(applySnapshot(envelope));
+            }
             case QUEST_SUGGESTED -> storeSuggestion(envelope);
             // MVP 범위 밖. 소비는 하되 아무것도 하지 않는다 -- 안 받으면 offset이 안 밀린다.
             case DAILY_GOAL_COMPLETED -> log.debug("DAILY_GOAL_COMPLETED는 MVP 범위 밖이라 무시한다.");
             default -> log.error("알 수 없는 eventType={}", envelope.eventType());
         }
+        return Optional.empty();
     }
     // T1 입구
-    private void applySnapshot(HealthEventEnvelope envelope) {
+    private Instant applySnapshot(HealthEventEnvelope envelope) {
         HealthActivitySyncedData data = convert(envelope.data(), HealthActivitySyncedData.class);
         if (data.activityDate() == null || data.measuredAt() == null || data.cumulative() == null) {
             throw new ContractViolationException("HEALTH_ACTIVITY_SYNCED 필수 필드 누락. data=" + envelope.data());
@@ -124,6 +132,7 @@ public class HealthEventConsumer {
                 partyQuestProgressService.apply(envelope.userId(), snapshot);
         log.debug("HEALTH_ACTIVITY_SYNCED 파티 퀘스트 처리 완료. measuredAt={} result={}",
                 snapshot.measuredAt(), partyResult.map(Object::toString).orElse("NO_ACTIVE_PARTY_QUEST"));
+        return snapshot.measuredAt();
     }
 
     // T2 입구
