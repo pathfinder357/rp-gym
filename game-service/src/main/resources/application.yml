@@ -166,6 +166,14 @@ rpgym:
     dlt-replay:
       max-replays: 3
 
+  # (R-15) 정합성 대조. 원장=지갑, 완료 퀘스트=원장, 파티 카운터=기여 합, 파티 보상=멤버 수, 랭킹=지갑
+  reconcile:
+    enabled: ${RECONCILE_ENABLED:true}
+    # 기동 직후는 피한다(마이그레이션 · 캐시 워밍 중)
+    initial-delay: 60000
+    # 10분. 랭킹은 두 번 연속 어긋나야 세므로 최소 감지 시간은 이 값의 두 배다
+    interval: 600000
+
   outbox:
     # 발행 토픽. 소비 측(Notification)과 맞춰야 하는 값이라 팀 확인이 필요하다 (잠정값)
     topic: game.events
