@@ -1,0 +1,46 @@
+# (B 준비, 2026-10-11) 로컬 관측 실험용. prometheus-develop.yml 과 같고 job 이름만 운영처럼 바꿨다.
+# 알림 규칙(alert-rules.yml)이 job=~"game-.*" · "notification-.*" 로 거르기 때문에 develop 의 job=game 으로는 절대 울리지 않는다.
+# docker-compose-observe.yml 이 이 파일을 Prometheus 에 붙인다.
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+
+  # 개발 환경에서는 서비스가 호스트에서 실행되므로
+  # Prometheus 컨테이너에서 host.docker.internal로 접근한다.
+
+  - job_name: eureka
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - host.docker.internal:19000
+
+  - job_name: gateway
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - host.docker.internal:19091
+
+  - job_name: user
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - host.docker.internal:19010
+
+  - job_name: health
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - host.docker.internal:19011
+
+  - job_name: game-blue
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - host.docker.internal:19012
+
+  - job_name: notification-blue
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - host.docker.internal:19013

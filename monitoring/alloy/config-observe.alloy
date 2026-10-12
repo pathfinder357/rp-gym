@@ -1,0 +1,49 @@
+// Docker 컨테이너 자동 발견
+discovery.docker "linux" {
+  host = "unix:///var/run/docker.sock"
+}
+
+// Docker 컨테이너 이름을 service_name 라벨로 설정
+discovery.relabel "docker_containers" {
+  targets = discovery.docker.linux.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "service_name"
+  }
+}
+
+// Docker 컨테이너 로그 수집
+loki.source.docker "containers" {
+  host         = "unix:///var/run/docker.sock"
+  targets      = discovery.relabel.docker_containers.output
+  labels       = {
+    platform = "docker",
+  }
+  forward_to   = [loki.write.local.receiver]
+}
+
+// Loki로 전송
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
+
+// ---------------------------------------------------------------- (B 준비, 2026-10-11) 로컬 관측 실험용
+// 로컬에서는 game-service 가 컨테이너가 아니라 호스트의 bootRun 으로 돈다(실험 실행기 run_exp.ps1).
+// 실행기가 앱 출력을 game-service/exp-results/*.log 로 남기므로, 그 폴더를 /exp-logs 로 붙여 읽는다.
+// 운영(컨테이너 출력 수집)과 라벨을 맞추려고 job · service_name 을 game-blue 로 단다.
+// tail_from_end: 처음 보는 파일은 끝부터 읽는다(지난 실험 로그 수십 MB 를 한꺼번에 밀어 넣지 않게).
+// docker-compose-observe.yml 이 이 파일과 폴더를 Alloy 에 붙인다.
+local.file_match "exp_logs" {
+  path_targets = [{"__path__" = "/exp-logs/*.log", "job" = "game-blue", "service_name" = "game-blue", "platform" = "host"}]
+  sync_period  = "5s"
+}
+
+loki.source.file "exp_logs" {
+  targets       = local.file_match.exp_logs.targets
+  forward_to    = [loki.write.local.receiver]
+  tail_from_end = true
+}

@@ -1,0 +1,406 @@
+# ============================================================
+# 로컬 관측 실험 전용 알림 규칙 — 손으로 고치지 말 것 (make_alert_rules_observe.py 가 만듦)
+# 원본 provisioning/alerting/alert-rules.yml 에서 game-consumer-alerts 그룹만 남긴 사본이다.
+# 로컬에서는 Health 서비스 · CPU 규칙이 데이터 없음 등으로 Slack 을 어지럽혀서 뺐다(deleteRules 로 이미 올라간 것도 지운다).
+# docker-compose-observe.yml 이 이 파일을 Grafana 안의 alert-rules.yml 자리에 덮어 붙인다. 운영(prod)은 원본을 그대로 쓴다.
+# 원본의 game 규칙을 고쳤으면: python monitoring/grafana/make_alert_rules_observe.py
+# 뺀 규칙: spring-boot-cpu-high, health-outbox-dlq-detected, health-outbox-pending-high
+# ============================================================
+apiVersion: 1
+groups:
+- orgId: 1
+  name: game-consumer-alerts
+  folder: RPGym Monitoring
+  interval: 1m
+  rules:
+  - uid: game-consumer-dlt-detected
+    title: Game Consumer DLT Detected
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 600
+        to: 0
+      model:
+        expr: sum by (job) (increase(rpgym_kafka_consumer_dlt_total{job=~"game-.*"}[10m]))
+        instant: true
+        intervalMs: 60000
+        maxDataPoints: 43200
+        refId: A
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        expression: A
+        reducer: last
+        refId: B
+        type: reduce
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        expression: B
+        conditions:
+        - evaluator:
+            params:
+            - 0
+            type: gt
+        refId: C
+        type: threshold
+    noDataState: OK
+    execErrState: Error
+    for: 0s
+    labels:
+      severity: warning
+      alertname: game-consumer-dlt-detected
+    annotations:
+      summary: Game Service 컨슈머가 레코드를 DLT로 옮김
+      description: 최근 10분 동안 처리하지 못한 레코드가 <원본 토픽>.DLT 로 옮겨졌습니다. Loki 에서 {job=~"game-.*"} |= "DLT 적재" 로 찾으면 위치 · eventId · 원인이 나옵니다(R-24).
+  - uid: game-consumer-lag-stuck
+    title: Game Consumer Lag Stuck
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        expr: min_over_time(max by (job) (rpgym_game_consumer_group_lag{job=~"game-.*"})[10m:1m])
+        instant: true
+        intervalMs: 60000
+        maxDataPoints: 43200
+        refId: A
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        expression: A
+        reducer: last
+        refId: B
+        type: reduce
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        expression: B
+        conditions:
+        - evaluator:
+            params:
+            - 0
+            type: gt
+        refId: C
+        type: threshold
+    noDataState: OK
+    execErrState: Error
+    for: 0s
+    labels:
+      severity: warning
+      alertname: game-consumer-lag-stuck
+    annotations:
+      summary: Game Service 컨슈머 lag이 10분 동안 0으로 돌아오지 않음
+      description: 컨슈머가 멈췄거나(같은 레코드 무한 재시도 = DB 장애 등) 처리량이 유입을 못 따라갑니다.
+  - uid: game-outbox-oldest-pending-high
+    title: Game Outbox Oldest Pending High
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 300
+        to: 0
+      model:
+        expr: max by (job) (rpgym_game_outbox_oldest_pending_age_seconds{job=~"game-.*"})
+        instant: true
+        intervalMs: 60000
+        maxDataPoints: 43200
+        refId: A
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        expression: A
+        reducer: last
+        refId: B
+        type: reduce
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        expression: B
+        conditions:
+        - evaluator:
+            params:
+            - 60
+            type: gt
+        refId: C
+        type: threshold
+    noDataState: OK
+    execErrState: Error
+    for: 2m
+    labels:
+      severity: warning
+      alertname: game-outbox-oldest-pending-high
+    annotations:
+      summary: Game Service Outbox 발행 정체
+      description: 가장 오래된 미발행 Outbox 이벤트가 60초 넘게 기다린 상태가 2분 이상 지속되었습니다.
+  - uid: game-reconcile-mismatch
+    title: Game Reconcile Mismatch
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 600
+        to: 0
+      model:
+        expr: max by (job, check) (rpgym_reconcile_mismatch{job=~"game-.*"})
+        instant: true
+        intervalMs: 60000
+        maxDataPoints: 43200
+        refId: A
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        expression: A
+        reducer: last
+        refId: B
+        type: reduce
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        expression: B
+        conditions:
+        - evaluator:
+            params:
+            - 0
+            type: gt
+        refId: C
+        type: threshold
+    noDataState: OK
+    execErrState: Error
+    for: 0s
+    labels:
+      severity: critical
+      alertname: game-reconcile-mismatch
+    annotations:
+      summary: Game 정합성 대조에서 불일치 발견
+      description: 어긋난 검사는 check 라벨, 어긋난 식별자는 Loki 에서 "정합성 불일치" 로그로 확인하세요. 자동으로 고치지 않습니다. ranking 만 어긋났다면 랭킹 재구축(POST /api/v1/internal/games/rankings/rebuild)으로 복구합니다.
+  - uid: game-reconcile-stale
+    title: Game Reconcile Not Running
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 600
+        to: 0
+      model:
+        expr: min by (job) (time() - rpgym_reconcile_last_success_timestamp{job=~"game-.*"} and rpgym_reconcile_last_success_timestamp{job=~"game-.*"} > 0)
+        instant: true
+        intervalMs: 60000
+        maxDataPoints: 43200
+        refId: A
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        expression: A
+        reducer: last
+        refId: B
+        type: reduce
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        expression: B
+        conditions:
+        - evaluator:
+            params:
+            - 1800
+            type: gt
+        refId: C
+        type: threshold
+    noDataState: OK
+    execErrState: Error
+    for: 0s
+    labels:
+      severity: warning
+      alertname: game-reconcile-stale
+    annotations:
+      summary: Game 정합성 대조가 30분 넘게 성공하지 못함
+      description: ReconciliationJob 로그(정합성 대조 실패)를 확인하세요. DB 장애이거나 쿼리가 너무 오래 걸립니다.
+  - uid: game-ranking-update-failed
+    title: Game Ranking Update Failed
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 600
+        to: 0
+      model:
+        expr: sum by (job) (increase(rpgym_ranking_update_failed_total{job=~"game-.*"}[10m]))
+        instant: true
+        intervalMs: 60000
+        maxDataPoints: 43200
+        refId: A
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        expression: A
+        reducer: last
+        refId: B
+        type: reduce
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        expression: B
+        conditions:
+        - evaluator:
+            params:
+            - 0
+            type: gt
+        refId: C
+        type: threshold
+    noDataState: OK
+    execErrState: Error
+    for: 0s
+    labels:
+      severity: warning
+      alertname: game-ranking-update-failed
+    annotations:
+      summary: Game 랭킹 반영 실패
+      description: Redis 상태를 확인하고, 복구 뒤 랭킹 재구축(POST /api/v1/internal/games/rankings/rebuild)을 한 번 실행하세요.
+  - uid: game-pipeline-latency-high
+    title: Game Pipeline Latency High
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 600
+        to: 0
+      model:
+        expr: histogram_quantile(0.95, sum by (job, le) (rate(rpgym_game_consumer_pipeline_latency_seconds_bucket{job=~"game-.*"}[5m])))
+        instant: true
+        intervalMs: 60000
+        maxDataPoints: 43200
+        refId: A
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        expression: A
+        reducer: last
+        refId: B
+        type: reduce
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        expression: B
+        conditions:
+        - evaluator:
+            params:
+            - 60
+            type: gt
+        refId: C
+        type: threshold
+    noDataState: OK
+    execErrState: Error
+    for: 10m
+    labels:
+      severity: warning
+      alertname: game-pipeline-latency-high
+    annotations:
+      summary: Game 이벤트 처리 지연 p95 60초 초과(10분 지속)
+      description: 사용자가 운동 후 퀘스트 진행률을 1분 넘게 기다리고 있습니다. lag · DB 커밋 시간 · 재시도 로그를 확인하세요.
+  - uid: notification-consumer-lag-stuck
+    title: Notification Consumer Lag Stuck
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 900
+        to: 0
+      model:
+        expr: min_over_time(max by (job) (kafka_consumer_fetch_manager_records_lag_max{job=~"notification-.*"})[10m:1m])
+        instant: true
+        intervalMs: 60000
+        maxDataPoints: 43200
+        refId: A
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        expression: A
+        reducer: last
+        refId: B
+        type: reduce
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        expression: B
+        conditions:
+        - evaluator:
+            params:
+            - 0
+            type: gt
+        refId: C
+        type: threshold
+    noDataState: OK
+    execErrState: Error
+    for: 0s
+    labels:
+      severity: warning
+      alertname: notification-consumer-lag-stuck
+    annotations:
+      summary: Notification 컨슈머 lag 이 10분 동안 0 으로 돌아오지 않음
+      description: Slack · user-service 장애로 재시도 중이거나, 특정 메시지에서 계속 실패해 파티션이 멈췄습니다. Notification 로그에서 같은 eventId 반복을 확인하세요.
+deleteRules:
+- orgId: 1
+  uid: spring-boot-cpu-high
+- orgId: 1
+  uid: health-outbox-dlq-detected
+- orgId: 1
+  uid: health-outbox-pending-high
