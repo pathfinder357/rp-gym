@@ -349,6 +349,54 @@ groups:
     annotations:
       summary: Game 이벤트 처리 지연 p95 60초 초과(10분 지속)
       description: 사용자가 운동 후 퀘스트 진행률을 1분 넘게 기다리고 있습니다. lag · DB 커밋 시간 · 재시도 로그를 확인하세요.
+  - uid: game-service-down
+    title: Game Service Down
+    condition: C
+    data:
+    - refId: A
+      datasourceUid: prometheus
+      relativeTimeRange:
+        from: 600
+        to: 0
+      model:
+        expr: (sum(up{job=~"game-.*"}) or vector(0))
+        instant: true
+        intervalMs: 60000
+        maxDataPoints: 43200
+        refId: A
+    - refId: B
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        expression: A
+        reducer: last
+        refId: B
+        type: reduce
+    - refId: C
+      datasourceUid: __expr__
+      relativeTimeRange:
+        from: 0
+        to: 0
+      model:
+        expression: B
+        conditions:
+        - evaluator:
+            params:
+            - 1
+            type: lt
+        refId: C
+        type: threshold
+    noDataState: Alerting
+    execErrState: Error
+    for: 2m
+    labels:
+      severity: critical
+      alertname: game-service-down
+    annotations:
+      summary: 살아 있는 Game 서비스가 없음
+      description: Prometheus 가 game-* 대상 어디에도 닿지 못한 지 2분이 넘었습니다. 이 동안 health.events 는 Kafka 에 쌓이기만 하고(유실은 없음, 보관 7일) XP 가 지급되지 않습니다. 컨테이너 상태 · 앱 로그를 확인하세요.
   - uid: notification-consumer-lag-stuck
     title: Notification Consumer Lag Stuck
     condition: C

@@ -608,6 +608,67 @@ groups:
           summary: "Game 이벤트 처리 지연 p95 60초 초과(10분 지속)"
           description: "사용자가 운동 후 퀘스트 진행률을 1분 넘게 기다리고 있습니다. lag · DB 커밋 시간 · 재시도 로그를 확인하세요."
 
+      # (R-25) Game 서비스가 통째로 죽음. 위 규칙들은 전부 Game 이 직접 내는 지표라, 앱이 죽으면 지표가 사라지고
+      # noDataState: OK 때문에 "정상" 으로 보인다(B-15 ③: 15분 다운 · 456건 밀림 · 알림 0).
+      # up 은 Prometheus 가 수집 시도마다 직접 만드는 값이라 앱이 죽어도 0 으로 남는다.
+      # Blue/Green 에서는 쉬는 색이 항상 up 0 이므로 "하나라도 0" 이 아니라 "살아 있는 Game 이 하나도 없음" 으로 건다.
+      # 수집 대상 자체가 빠져 up 이 아예 없을 때도 울리도록 or vector(0) 을 붙인다. 배포 · 재시작의 짧은 공백은 for 2m 으로 거른다
+      - uid: game-service-down
+        title: Game Service Down
+        condition: C
+
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              expr: (sum(up{job=~"game-.*"}) or vector(0))
+              instant: true
+              intervalMs: 60000
+              maxDataPoints: 43200
+              refId: A
+
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 1
+                    type: lt
+              refId: C
+              type: threshold
+
+        # 식이 or vector(0) 이라 데이터 없음은 생기지 않는다. 그래도 생기면 장애로 본다
+        noDataState: Alerting
+        execErrState: Error
+        for: 2m
+
+        labels:
+          severity: critical
+          alertname: game-service-down
+
+        annotations:
+          summary: "살아 있는 Game 서비스가 없음"
+          description: "Prometheus 가 game-* 대상 어디에도 닿지 못한 지 2분이 넘었습니다. 이 동안 health.events 는 Kafka 에 쌓이기만 하고(유실은 없음, 보관 7일) XP 가 지급되지 않습니다. 컨테이너 상태 · 앱 로그를 확인하세요."
+
       # Notification 은 모든 예외를 무한 재시도한다(예외 분류 · DLT 없음, Game 범위 밖이라 고치지 않음). 버그 하나가 파티션을 멈춰도 다른 신호가 없어서 lag 으로만 감지한다
       - uid: notification-consumer-lag-stuck
         title: Notification Consumer Lag Stuck
