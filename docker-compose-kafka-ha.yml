@@ -1,0 +1,128 @@
+# ============================================================
+# 로컬 실험용 Kafka 3대 구성. develop 위에 겹쳐서 띄운다.
+#
+#   docker compose -f docker-compose-develop.yml -f docker-compose-kafka-ha.yml up -d
+#
+# 왜 필요한가
+#   develop · prod 는 브로커 1대(복제 계수 1)다. ISR 이 리더 하나뿐이라 acks=all 이 사실상 acks=1 이고,
+#   Kafka 는 기본 설정에서 메시지마다 fsync 하지 않으므로 호스트가 꺼지면 응답까지 받은 메시지도 잃을 수 있다.
+#   이 파일은 "복제가 있으면 어떻게 달라지는가"를 로컬에서 실험하려고 둔다.
+#
+# 구성
+#   브로커 3대(KRaft, 브로커 + 컨트롤러 겸용), 복제 계수 3, min.insync.replicas 2, 토픽 자동 생성 끔
+#   토픽은 kafka-init 가 명시적으로 만든다(파티션 · 복제 · 보관 기간을 코드로 남긴다)
+#   호스트에서 띄운 앱(.env 의 localhost:19030)이 세 브로커 모두에 닿도록 외부 리스너를 브로커마다 둔다
+#     kafka   localhost:19030   kafka-2 localhost:19032   kafka-3 localhost:19033
+#
+# 실험 (리펙토링.md R-14)
+#   ① 배경 트래픽 중 docker stop rp-gym-kafka-2      -> 발행 실패 0, 소비 계속, 정합성 대조(R-15) 0
+#   ② 이어서 docker stop rp-gym-kafka-3              -> ISR 1 < 2 라 쓰기 거부(NotEnoughReplicas).
+#      Game Outbox 는 PENDING 으로 쌓이고(최장 대기 알림), 브로커가 돌아오면 빠진다. 유실 0
+#   ③ 비교군: develop 만으로(브로커 1대) 같은 장애 -> 브로커가 돌아올 때까지 발행 전체 정지
+#
+# 운영 EC2 에는 쓰지 않는다. 2 vCPU · 7.6GB · 스왑 없음에 컨테이너가 이미 19개라 브로커 2대를 더 띄우면
+# 메모리 부족 위험이 크다. 또 같은 호스트의 3대는 호스트 장애를 막지 못한다(셋이 같이 꺼진다).
+# 운영이라면 호스트를 나눈 3대 또는 관리형(MSK)이 답이다.
+#
+# 기존 develop 의 kafka-data 볼륨(투표자 1명으로 포맷됨)과 섞이지 않게 별도 볼륨을 쓴다.
+# ============================================================
+
+x-kafka-common: &kafka-common
+  image: apache/kafka:4.3.1
+  restart: unless-stopped
+  networks:
+    - app-network
+
+x-kafka-env: &kafka-env
+  CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk   # KRaft 클러스터 ID(base64 16바이트). 세 노드가 같아야 한다
+  KAFKA_PROCESS_ROLES: broker,controller
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+  KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+  KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+  KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093,2@kafka-2:9093,3@kafka-3:9093
+  KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:19092,CONTROLLER://0.0.0.0:9093
+  # 복제 · 내구성
+  KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+  KAFKA_MIN_INSYNC_REPLICAS: 2
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+  # ISR 밖의 복제본을 리더로 뽑지 않는다(뽑으면 커밋된 메시지가 사라질 수 있다). 기본값이지만 명시한다
+  KAFKA_UNCLEAN_LEADER_ELECTION_ENABLE: "false"
+  # 오타 난 토픽 이름이 조용히 새 토픽이 되지 않게 한다. 토픽은 kafka-init 이 만든다
+  KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+  KAFKA_NUM_PARTITIONS: 3
+  KAFKA_LOG_DIRS: /var/lib/kafka/data
+  KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
+
+services:
+
+  kafka:
+    <<: *kafka-common
+    container_name: rp-gym-kafka
+    ports:
+      - "19030:19092"
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 1
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:19030
+    volumes:
+      - kafka-ha-1:/var/lib/kafka/data
+
+  kafka-2:
+    <<: *kafka-common
+    container_name: rp-gym-kafka-2
+    ports:
+      - "19032:19092"
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 2
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-2:9092,EXTERNAL://localhost:19032
+    volumes:
+      - kafka-ha-2:/var/lib/kafka/data
+
+  kafka-3:
+    <<: *kafka-common
+    container_name: rp-gym-kafka-3
+    ports:
+      - "19033:19092"
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 3
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-3:9092,EXTERNAL://localhost:19033
+    volumes:
+      - kafka-ha-3:/var/lib/kafka/data
+
+  # 토픽을 명시적으로 만든다. 이미 있으면 건너뛴다(--if-not-exists). 한 번 돌고 끝난다.
+  # 보관 기간: 원본 7일(브로커 기본과 같지만 명시), DLT · DLQ 14일(원인을 고치는 시간보다 길게)
+  kafka-init:
+    image: apache/kafka:4.3.1
+    container_name: rp-gym-kafka-init
+    restart: "no"
+    depends_on:
+      - kafka
+      - kafka-2
+      - kafka-3
+    networks:
+      - app-network
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        B=kafka:9092,kafka-2:9092,kafka-3:9092
+        T=/opt/kafka/bin/kafka-topics.sh
+        until $$T --bootstrap-server $$B --list >/dev/null 2>&1; do echo "waiting for kafka"; sleep 2; done
+        create() { $$T --bootstrap-server $$B --create --if-not-exists --topic "$$1" --partitions 3 --replication-factor 3 \
+                     --config min.insync.replicas=2 --config retention.ms="$$2"; }
+        create health.events               604800000
+        create health.daily-goal.events    604800000
+        create game.events                 604800000
+        create health.events.DLT           1209600000
+        create health.events.dlq           1209600000
+        create health.daily-goal.events.dlq 1209600000
+        $$T --bootstrap-server $$B --describe | grep -E "Topic:|ReplicationFactor" | head -50
+
+volumes:
+  kafka-ha-1:
+  kafka-ha-2:
+  kafka-ha-3:

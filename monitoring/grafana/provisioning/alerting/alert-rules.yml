@@ -262,7 +262,7 @@ groups:
 
         annotations:
           summary: "Game Service 컨슈머가 레코드를 DLT로 옮김"
-          description: "최근 10분 동안 처리하지 못한 레코드가 <원본 토픽>.DLT 로 옮겨졌습니다. 헤더의 예외 정보로 원인을 확인하세요."
+          description: "최근 10분 동안 처리하지 못한 레코드가 <원본 토픽>.DLT 로 옮겨졌습니다. Loki 에서 {job=~\"game-.*\"} |= \"DLT 적재\" 로 찾으면 위치 · eventId · 원인이 나옵니다(R-24)."
 
       # 받는 쪽: lag이 10분 내내 한 번도 0으로 내려오지 않으면 알림. 정각 스파이크처럼 쌓였다 빠지는 것은 걸리지 않는다
       - uid: game-consumer-lag-stuck
@@ -276,7 +276,9 @@ groups:
               from: 900
               to: 0
             model:
-              expr: min_over_time(max by (job) (kafka_consumer_fetch_manager_records_lag_max{job=~"game-.*"})[10m:1m])
+              # (R-23, 2026-10-12) records_lag_max(가져온 위치 기준)는 실패 레코드로 되감을 때마다 뒤 레코드까지 다시 가져와 0 이 된다.
+              # 밀린 양이 한 번에 가져오는 양보다 적으면 멈춘 파티션을 못 잡아서(B-12: 20분 정지에도 0), 커밋 기준 lag 으로 바꿨다(ConsumerGroupLagMetrics).
+              expr: min_over_time(max by (job) (rpgym_game_consumer_group_lag{job=~"game-.*"})[10m:1m])
               instant: true
               intervalMs: 60000
               maxDataPoints: 43200
@@ -377,3 +379,349 @@ groups:
         annotations:
           summary: "Game Service Outbox 발행 정체"
           description: "가장 오래된 미발행 Outbox 이벤트가 60초 넘게 기다린 상태가 2분 이상 지속되었습니다."
+
+      # (R-15) 정합성 대조: 원장=지갑, 완료 퀘스트=원장, 파티 카운터=기여 합, 파티 보상=멤버 수, 랭킹=지갑 중 하나라도 어긋나면 알림
+      - uid: game-reconcile-mismatch
+        title: Game Reconcile Mismatch
+        condition: C
+
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              expr: max by (job, check) (rpgym_reconcile_mismatch{job=~"game-.*"})
+              instant: true
+              intervalMs: 60000
+              maxDataPoints: 43200
+              refId: A
+
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+              refId: C
+              type: threshold
+
+        # Blue/Green 중 쉬는 쪽은 항상 데이터가 없다. 데이터 없음을 장애로 보지 않는다
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+
+        labels:
+          severity: critical
+          alertname: game-reconcile-mismatch
+
+        annotations:
+          summary: "Game 정합성 대조에서 불일치 발견"
+          description: "어긋난 검사는 check 라벨, 어긋난 식별자는 Loki 에서 \"정합성 불일치\" 로그로 확인하세요. 자동으로 고치지 않습니다. ranking 만 어긋났다면 랭킹 재구축(POST /api/v1/internal/games/rankings/rebuild)으로 복구합니다."
+
+      # (R-15) 대조 작업이 30분 넘게 끝나지 않으면 알림. 대조가 멈추면 불일치 게이지가 0 인 채로 굳어 "정상"처럼 보이기 때문
+      - uid: game-reconcile-stale
+        title: Game Reconcile Not Running
+        condition: C
+
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              expr: min by (job) (time() - rpgym_reconcile_last_success_timestamp{job=~"game-.*"} and rpgym_reconcile_last_success_timestamp{job=~"game-.*"} > 0)
+              instant: true
+              intervalMs: 60000
+              maxDataPoints: 43200
+              refId: A
+
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 1800
+                    type: gt
+              refId: C
+              type: threshold
+
+        # Blue/Green 중 쉬는 쪽은 항상 데이터가 없다. 데이터 없음을 장애로 보지 않는다
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+
+        labels:
+          severity: warning
+          alertname: game-reconcile-stale
+
+        annotations:
+          summary: "Game 정합성 대조가 30분 넘게 성공하지 못함"
+          description: "ReconciliationJob 로그(정합성 대조 실패)를 확인하세요. DB 장애이거나 쿼리가 너무 오래 걸립니다."
+
+      # (R-20) 랭킹 읽기 모델(ZSET · 레벨) 반영 실패. 그 사용자가 다음 XP 를 받을 때까지 랭킹이 틀린 채로 남는다
+      - uid: game-ranking-update-failed
+        title: Game Ranking Update Failed
+        condition: C
+
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              expr: sum by (job) (increase(rpgym_ranking_update_failed_total{job=~"game-.*"}[10m]))
+              instant: true
+              intervalMs: 60000
+              maxDataPoints: 43200
+              refId: A
+
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+              refId: C
+              type: threshold
+
+        # Blue/Green 중 쉬는 쪽은 항상 데이터가 없다. 데이터 없음을 장애로 보지 않는다
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+
+        labels:
+          severity: warning
+          alertname: game-ranking-update-failed
+
+        annotations:
+          summary: "Game 랭킹 반영 실패"
+          description: "Redis 상태를 확인하고, 복구 뒤 랭킹 재구축(POST /api/v1/internal/games/rankings/rebuild)을 한 번 실행하세요."
+
+      # (R-16) Health 발행부터 Game 처리 완료까지 p95 가 60초를 넘은 상태가 10분 이어지면 알림. 정각 스파이크(수십 초)가 금방 빠지는 것은 걸리지 않는다
+      - uid: game-pipeline-latency-high
+        title: Game Pipeline Latency High
+        condition: C
+
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              expr: histogram_quantile(0.95, sum by (job, le) (rate(rpgym_game_consumer_pipeline_latency_seconds_bucket{job=~"game-.*"}[5m])))
+              instant: true
+              intervalMs: 60000
+              maxDataPoints: 43200
+              refId: A
+
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 60
+                    type: gt
+              refId: C
+              type: threshold
+
+        # Blue/Green 중 쉬는 쪽은 항상 데이터가 없다. 데이터 없음을 장애로 보지 않는다
+        noDataState: OK
+        execErrState: Error
+        for: 10m
+
+        labels:
+          severity: warning
+          alertname: game-pipeline-latency-high
+
+        annotations:
+          summary: "Game 이벤트 처리 지연 p95 60초 초과(10분 지속)"
+          description: "사용자가 운동 후 퀘스트 진행률을 1분 넘게 기다리고 있습니다. lag · DB 커밋 시간 · 재시도 로그를 확인하세요."
+
+      # (R-25) Game 서비스가 통째로 죽음. 위 규칙들은 전부 Game 이 직접 내는 지표라, 앱이 죽으면 지표가 사라지고
+      # noDataState: OK 때문에 "정상" 으로 보인다(B-15 ③: 15분 다운 · 456건 밀림 · 알림 0).
+      # up 은 Prometheus 가 수집 시도마다 직접 만드는 값이라 앱이 죽어도 0 으로 남는다.
+      # Blue/Green 에서는 쉬는 색이 항상 up 0 이므로 "하나라도 0" 이 아니라 "살아 있는 Game 이 하나도 없음" 으로 건다.
+      # 수집 대상 자체가 빠져 up 이 아예 없을 때도 울리도록 or vector(0) 을 붙인다. 배포 · 재시작의 짧은 공백은 for 2m 으로 거른다
+      - uid: game-service-down
+        title: Game Service Down
+        condition: C
+
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              expr: (sum(up{job=~"game-.*"}) or vector(0))
+              instant: true
+              intervalMs: 60000
+              maxDataPoints: 43200
+              refId: A
+
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 1
+                    type: lt
+              refId: C
+              type: threshold
+
+        # 식이 or vector(0) 이라 데이터 없음은 생기지 않는다. 그래도 생기면 장애로 본다
+        noDataState: Alerting
+        execErrState: Error
+        for: 2m
+
+        labels:
+          severity: critical
+          alertname: game-service-down
+
+        annotations:
+          summary: "살아 있는 Game 서비스가 없음"
+          description: "Prometheus 가 game-* 대상 어디에도 닿지 못한 지 2분이 넘었습니다. 이 동안 health.events 는 Kafka 에 쌓이기만 하고(유실은 없음, 보관 7일) XP 가 지급되지 않습니다. 컨테이너 상태 · 앱 로그를 확인하세요."
+
+      # Notification 은 모든 예외를 무한 재시도한다(예외 분류 · DLT 없음, Game 범위 밖이라 고치지 않음). 버그 하나가 파티션을 멈춰도 다른 신호가 없어서 lag 으로만 감지한다
+      - uid: notification-consumer-lag-stuck
+        title: Notification Consumer Lag Stuck
+        condition: C
+
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 900
+              to: 0
+            model:
+              expr: min_over_time(max by (job) (kafka_consumer_fetch_manager_records_lag_max{job=~"notification-.*"})[10m:1m])
+              instant: true
+              intervalMs: 60000
+              maxDataPoints: 43200
+              refId: A
+
+          - refId: B
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 0
+              to: 0
+            model:
+              expression: B
+              conditions:
+                - evaluator:
+                    params:
+                      - 0
+                    type: gt
+              refId: C
+              type: threshold
+
+        # Blue/Green 중 쉬는 쪽은 항상 데이터가 없다. 데이터 없음을 장애로 보지 않는다
+        noDataState: OK
+        execErrState: Error
+        for: 0s
+
+        labels:
+          severity: warning
+          alertname: notification-consumer-lag-stuck
+
+        annotations:
+          summary: "Notification 컨슈머 lag 이 10분 동안 0 으로 돌아오지 않음"
+          description: "Slack · user-service 장애로 재시도 중이거나, 특정 메시지에서 계속 실패해 파티션이 멈췄습니다. Notification 로그에서 같은 eventId 반복을 확인하세요."

@@ -1,5 +1,6 @@
 package com.workoutdone.rpgym.game.ranking.adapter.in.event;
 
+import com.workoutdone.rpgym.game.ranking.application.RankingMetrics;
 import com.workoutdone.rpgym.game.ranking.application.RankingService;
 import com.workoutdone.rpgym.game.xp.application.XpGranted;
 import lombok.RequiredArgsConstructor;
@@ -20,6 +21,7 @@ import org.springframework.transaction.event.TransactionalEventListener;
 public class XpGrantedEventListener {
 
     private final RankingService rankingService;
+    private final RankingMetrics rankingMetrics;
 
     /**
      * AFTER_COMMIT 이라 XP 지급 트랜잭션이 커밋된 뒤에만 실행된다.
@@ -43,8 +45,10 @@ public class XpGrantedEventListener {
              * (삼키지 않으면 Kafka offset 이 안 잡혀 해당 파티션이 멈춘다)
              *
              * 랭킹은 절대값을 다시 읽어 덮어쓰는 구조라, 다음 XpGranted 가 알아서 바로잡는다.
-             * 즉시 복구가 필요하면 RankingRebuildJob 을 수동 실행한다.
+             * 즉시 복구가 필요하면 RankingRebuildJob 을 실행한다(내부 API).
+             * 삼키되 세어 둔다. 로그만으로는 틀어진 걸 아무도 모른다.
              */
+            rankingMetrics.listenerFailed();
             log.error("랭킹 갱신 실패. userId={}", event.userId(), e);
         }
     }

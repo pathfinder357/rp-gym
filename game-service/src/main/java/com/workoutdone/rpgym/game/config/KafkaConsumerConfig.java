@@ -7,6 +7,8 @@ import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.config.TopicConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -52,6 +54,8 @@ import java.time.Duration;
 @Configuration
 public class KafkaConsumerConfig {
 
+    private static final Logger log = LoggerFactory.getLogger(KafkaConsumerConfig.class);
+
     private static final long RETRY_INTERVAL_MS = 2_000L;
     private static final int MAX_RETRIES = 3;
     private static final Duration DLT_RETENTION = Duration.ofDays(14);
@@ -76,6 +80,10 @@ public class KafkaConsumerConfig {
 
     // 원본 토픽 이름 뒤에 .DLT. Health 의 발행 쪽 DLQ(health.events.dlq)와는 다른 토픽이다.
     // 보존 기간은 원인을 고치는 데 걸리는 시간보다 길어야 한다. 브로커 기본값에 맡기지 않고 여기서 정한다.
+    // 복제 계수는 지정하지 않는다 -> 브로커 기본값(default.replication.factor)을 따른다.
+    // develop · prod(브로커 1대)는 1, docker-compose-kafka-ha.yml(3대)은 3 이 된다(R-14).
+    // 이미 있는 토픽이면 KafkaAdmin 은 아무것도 바꾸지 않는다(복제 계수 변경은 운영 작업이다).
+    // 되돌리는 방법은 DltReplayService(R-19).
     @Bean
     public NewTopic healthEventsDeadLetterTopic(@Value("${rpgym.kafka.health-events-topic}") String topic) {
         return TopicBuilder.name(topic + DLT_SUFFIX)
@@ -97,12 +105,39 @@ public class KafkaConsumerConfig {
 
         DefaultErrorHandler handler = new DefaultErrorHandler((record, ex) -> {
             // DLT 발행이 실패하면 accept 가 예외를 던진다. 그때는 세지 않고, 원본 오프셋도 커밋되지 않는다.
-            deadLetter.accept(record, ex);
+            try {
+                deadLetter.accept(record, ex);
+            } catch (RuntimeException publishFailure) {
+                // R-24: 발행 실패도 남긴다. 오프셋을 넘기지 않으므로 같은 레코드가 다시 온다.
+                log.error("DLT 발행 실패 -- 오프셋을 넘기지 않고 다시 처리한다. {} cause={} publishError={}",
+                        DeadLetterLog.describe(record), DeadLetterLog.cause(ex), DeadLetterLog.cause(publishFailure));
+                throw publishFailure;
+            }
             dltCounter.increment();
+            // R-24: 알림(DLT 카운터)을 받은 사람이 Loki 에서 "DLT 적재" 로 찾으면 여기서 원인까지 나온다.
+            log.error("DLT 적재. {} -> {}{} cause={}", DeadLetterLog.describe(record),
+                    record.topic(), DLT_SUFFIX, DeadLetterLog.cause(ex));
         }, otherBackOff);
         handler.setBackOffFunction((record, ex) -> isTransient(ex) ? transientBackOff : null);
         handler.addNotRetryableExceptions(ContractViolationException.class);
+        // R-24: 시도마다 한 줄. A-8 의 재시도 파도나 장애 중 무한 재시도가 로그로 보이게 한다.
+        // 일시 장애는 2초마다 한 줄씩 쌓인다 (1분 장애 = 파티션당 약 30줄). 장애 중에는 이 줄이 곧 증거라 줄이지 않는다.
+        handler.setRetryListeners((record, ex, deliveryAttempt) ->
+                log.warn("컨슈머 처리 실패 (시도 {}회, {}). {} cause={}", deliveryAttempt, failureKind(ex),
+                        DeadLetterLog.describe(record), DeadLetterLog.cause(ex)));
         return handler;
+    }
+
+    static String failureKind(Throwable ex) {
+        if (isTransient(ex)) {
+            return "일시 장애: 풀릴 때까지 재시도";
+        }
+        for (Throwable t = ex; t != null && t.getCause() != t; t = t.getCause()) {
+            if (t instanceof ContractViolationException) {
+                return "계약 위반: 곧바로 DLT";
+            }
+        }
+        return "그 밖의 예외: 재시도 후 DLT";
     }
 
     // 기다리면 풀리는 장애인 지판 별하는 코드
