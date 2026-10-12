@@ -162,6 +162,9 @@ rpgym:
   kafka:
     #  이벤트 계약 -- Health 3종을 한 토픽으로 통합했다
     health-events-topic: health.events
+    # (R-19) DLT 재처리. 같은 레코드를 이 횟수만큼 되돌렸는데도 다시 DLT 로 오면 더 되돌리지 않는다
+    dlt-replay:
+      max-replays: 3
 
   outbox:
     # 발행 토픽. 소비 측(Notification)과 맞춰야 하는 값이라 팀 확인이 필요하다 (잠정값)
