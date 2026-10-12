@@ -47,9 +47,10 @@ powershell -ExecutionPolicy Bypass -File .\run_exp.ps1 -Exp A-5      # 실험 �
 |---|---|---|---|
 | B-0 | 관측 구성 준비 | Prometheus job · 알림 규칙 · Loki · Slack 연락처 | `results/B-0_20261012-120403.txt` |
 | B-12 | 알림 3종: DLT / 컨슈머 지연 / Outbox 최장 대기 | DLT 60초 · Outbox 237초 firing. 지연 알림은 예전 지표(records_lag_max)가 멈춘 파티션에서 0 → **R-23** 커밋 기준 lag 로 고친 뒤 603초 firing | `results/B-12_20261012-121232.txt` · `B-12_20261012-132128.txt`, `captures/02 · 03 · 04` |
-| B-13 | 대조 불일치 · 랭킹 반영 실패 · 처리 지연 p95 | 60초 · 116초 · 593초 firing, 모두 resolved | `results/B-13_20261012-134640.txt`, `captures/05 · 06 · 07` |
+| B-13 | 대조 불일치 · 랭킹 반영 실패 · 처리 지연 p95 · 대조 멈춤 | 60초 · 116초 · 593초 firing, 모두 resolved. 대조 멈춤(30분 기준)은 따로 돌려 1,808초(30분 8초) firing · Slack, 풀자 60초 뒤 해소 | `results/B-13_20261012-134640.txt` · `B-13_20261012-191935.txt`, `captures/05 · 06 · 07 · 14` |
 | B-14 | 알림 뒤 Loki 에서 원인 찾기 | 처음엔 0줄(원인은 DLT 헤더에만) → **R-24** 뒤 위치 · eventId · 근본 원인 한 줄씩 | `results/B-14_20261012-144348.txt` → `B-14_20261012-145404.txt`, `captures/10` |
 | B-16 | PostgreSQL 60초 · Kafka 95초 정지 | 각 150/150 · 중복 0 · DLT 0 · 대조 0 · 알림 0 | `results/B-16_20261012-143058.txt`, `captures/08 · 09` |
+| B-15 | lag 알림 오탐 · 정지 감지 · 앱 다운 | 평상시 30분 오탐 0 · 전 파티션 멈춤 610초 firing · **앱 15분 다운 때 알림 0(456건 밀림)** → **R-25** `Game Service Down` 추가 뒤 176초 firing · Slack · 재기동 25초 뒤 해소 | `results/B-15_20261012-165021.txt` → `B-15_20261012-190842.txt`, `captures/12 · 13` |
 | B-17 | trace 이어짐 (R-17) | 소비 → (다른 스레드) Outbox 발행 → game.events 헤더까지 한 traceId, 판정 5/5 | `results/B-17_20261012-151053.txt` |
 | B-19 | Outbox 발행 직후 · 커밋 전 강제 종료 | 50건 중 유실 0 · 중복 10(= 죽기 전 보낸 수, 같은 eventId) = 최소 한 번 | `results/B-19_20261012-152804.txt` · `B-19_kafka_dump.txt` |
 

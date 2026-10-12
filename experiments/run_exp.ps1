@@ -705,6 +705,8 @@ if ($E.Post -eq 'B-15') {
     }
     $ph = if ($PSBoundParameters.ContainsKey('Phases')) { $Phases } else { '123' }
     $normalMin = 30; $stuckMin = 15; $downMin = 15
+    # 3 단계만 돌릴 때(R-25 확인)는 앱 다운 알림이 울리는 데 3분 남짓이면 되므로 5분만 죽인다
+    if ($ph -eq '3') { $downMin = 5 }
     W "단계: $ph  (1 평상시 $normalMin 분 오탐 확인 · 2 앱은 살아 있고 전 파티션 멈춤 $stuckMin 분 · 3 앱 자체가 죽음 $downMin 분)"
     $script:b15n = 0; $script:b15sent = 0
     $stuckFlag = Join-Path $OutDir 'b15-stuck.flag'
@@ -716,7 +718,7 @@ if ($E.Post -eq 'B-15') {
     Start-AppWith $appArgs
     W "기준 상태 대기 (70초)"; Start-Sleep -Seconds 70
     Run 'lag 규칙 시작 상태 (기대: inactive)' { RuleStateHealth 'Game Consumer Lag Stuck' } | Out-Null
-    $p1 = $p2 = $p2r = '(건너뜀)'; $p3 = '(건너뜀)'
+    $p1 = $p2 = $p2r = '(건너뜀)'; $p3 = '(건너뜀)'; $p3down = ''
 
     if ($ph -match '1') {
         W ""; W "## 1) 평상시 $normalMin 분: 10초마다 6건씩 흘린다 (분당 36건). 규칙이 한 번도 inactive 를 벗어나면 안 된다"
@@ -741,9 +743,16 @@ if ($E.Post -eq 'B-15') {
     }
     if ($ph -match '3') {
         W ""; W "## 3) 앱 자체가 죽음 $downMin 분 (트래픽은 계속). lag 지표를 앱이 내므로 지표가 사라진다 -> 규칙은 어떻게 되나"
+        # (R-25) 시작 전에 앱 다운 규칙이 풀려 있어야 이번 다운의 시간을 잴 수 있다(지난 실험 사이 앱이 꺼져 있던 동안 firing 이었을 수 있음)
+        WaitRule 'Game Service Down' 'inactive' 300 '(sum(up{job=~"game-.*"}) or vector(0))' | Out-Null
         Stop-App
-        W "앱 종료  $(Get-Date -Format 'HH:mm:ss')"
-        B15Wait ($downMin * 60) 'app down' '' | Out-Null
+        $tDown = Get-Date
+        W "앱 종료  $($tDown.ToString('HH:mm:ss'))"
+        $rd = WaitRule 'Game Service Down' 'firing' 600 '(sum(up{job=~"game-.*"}) or vector(0))'
+        $p3down = if ($rd -ge 0) { "Game Service Down firing: 앱 종료부터 $([int]((Get-Date) - $tDown).TotalSeconds) 초" } else { 'Game Service Down 10분 안에 안 울림' }
+        W "  -> $p3down"
+        $restMin = [math]::Max(1, $downMin - [int][math]::Ceiling(((Get-Date) - $tDown).TotalMinutes))
+        B15Wait ($restMin * 60) 'app down' '' | Out-Null
         $seen = ($script:b15seen.Keys | Sort-Object) -join ', '
         $backlog = KafkaGroupLag
         W "이 구간에 본 lag 규칙 상태: $seen · Kafka 쪽 실제 밀린 양: $backlog 건"
@@ -756,12 +765,14 @@ if ($E.Post -eq 'B-15') {
             $l = KafkaGroupLag; if ($l -le 12) { break }; Start-Sleep -Seconds 5
         }
         W "재기동 뒤 밀린 것 소화: $([int]((Get-Date) - $t0).TotalSeconds)초 (남은 lag $(KafkaGroupLag))"
+        $rdr = WaitRule 'Game Service Down' 'inactive' 300 '(sum(up{job=~"game-.*"}) or vector(0))'
+        $p3down += " · 재기동 뒤 inactive $rdr 초"
     }
 
     W ""; W "### 요약"
     W "  1) 평상시 오탐: $p1"
     W "  2) 앱 살아 있고 멈춤: $p2 · 해제 뒤 $p2r"
-    W "  3) 앱 자체가 죽음: $p3"
+    W "  3) 앱 자체가 죽음: $p3 · $p3down"
     W "  보낸 배경 이벤트: $($script:b15sent)"
     W ""; W "### 앱 종료"
     Stop-App
