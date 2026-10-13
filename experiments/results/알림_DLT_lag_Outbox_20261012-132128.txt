@@ -1,0 +1,111 @@
+﻿# 실험 알림(DLT · lag · Outbox) — 알림 3종: DLT 적재 · 컨슈머 지연 · Outbox 최장 대기 -> Grafana firing -> Slack
+시각: 2026-10-12 13:21:28  /  앱 인자: 
+브랜치: 실험 브랜치  /  커밋: 86558fd
+
+### 관측 구성 기동 (develop + observe, 규칙은 game 만)
+ Container rp-gym-kafka Running 
+ Container rp-gym-postgres-game Running 
+ Container rp-gym-prometheus Running 
+ Container rp-gym-zipkin Running 
+ Container rp-gym-grafana Running 
+ Container rp-gym-loki Running 
+ Container rp-gym-alloy Running 
+ Container rp-gym-redis Running 
+ Container rp-gym-loki Waiting 
+ Container rp-gym-prometheus Waiting 
+ Container rp-gym-loki Waiting 
+ Container rp-gym-loki Healthy 
+ Container rp-gym-prometheus Healthy 
+ Container rp-gym-loki Healthy 
+Grafana 재시작: rp-gym-grafana
+Grafana 응답 (12초)
+
+### 지난 데이터 정리
+BEGIN
+DELETE 0
+DELETE 0
+DELETE 0
+DELETE 1
+DELETE 0
+DELETE 0
+COMMIT
+
+### 데이터 생성 (gen.py)
+만든 파일: 01_seed.sql, 02_p1_dlt / 03_p2_lag / 04_p3_outbox .template.txt, 99_cleanup.sql
+
+### 시드
+BEGIN
+INSERT 0 1
+COMMIT
+ b12_quests 
+------------
+          1
+(1 row)
+
+
+### 앱 기동 (앱 인자: --rpgym.experiment.stuck-user-prefix=b1200002- --rpgym.experiment.stuck-flag=C:/workspace/health_service/game-service/exp-results/b12-stuck.flag --rpgym.experiment.publish-fail-flag=C:/workspace/health_service/game-service/exp-results/b12-publish-fail.flag)
+기동 확인 (21초, 로그: C:\workspace\health_service\game-service\exp-results\알림_DLT_lag_Outbox_20261012-132128.log)
+기준 상태 대기 (70초: 규칙이 한 번 이상 평가되게)
+
+### 시작 전 규칙 상태 (기대: 전부 inactive)
+[game-consumer-alerts] Game Consumer DLT Detected : state=inactive health=ok
+[game-consumer-alerts] Game Consumer Lag Stuck : state=inactive health=ok
+[game-consumer-alerts] Game Outbox Oldest Pending High : state=inactive health=ok
+[game-consumer-alerts] Game Reconcile Mismatch : state=inactive health=ok
+[game-consumer-alerts] Game Reconcile Not Running : state=inactive health=ok
+[game-consumer-alerts] Game Ranking Update Failed : state=inactive health=ok
+[game-consumer-alerts] Game Pipeline Latency High : state=inactive health=ok
+[game-consumer-alerts] Notification Consumer Lag Stuck : state=inactive health=ok
+
+### Grafana 에 올라간 lag 규칙 식 (기대: rpgym_game_consumer_group_lag)
+min_over_time(max by (job) (rpgym_game_consumer_group_lag{job=~"game-.*"})[10m:1m])
+
+### 커밋 기준 lag 지표가 들어오는지 (커밋 기준 lag, 기대: 파티션 3줄)
+__name__=rpgym_game_consumer_group_lag,instance=host.docker.internal:19012,job=game-blue,partition=0,topic=health.events => 0
+__name__=rpgym_game_consumer_group_lag,instance=host.docker.internal:19012,job=game-blue,partition=1,topic=health.events => 0
+__name__=rpgym_game_consumer_group_lag,instance=host.docker.internal:19012,job=game-blue,partition=2,topic=health.events => 0
+
+## 2) 컨슈머 지연 알림 (규칙: lag 이 10분 내내 0 으로 안 내려오면. 기대 firing 약 10~11분)
+주입: stuck 파일 생성 + 같은 유저 이벤트 6건  13:23:16
+  ... 60초: 상태 inactive   => 6
+  ... 121초: 상태 inactive   => 6
+  ... 181초: 상태 inactive   => 6
+  ... 241초: 상태 inactive   => 6
+  ... 301초: 상태 inactive   => 6
+  ... 362초: 상태 inactive   => 6
+  ... 422초: 상태 inactive   => 6
+  ... 482초: 상태 inactive   => 6
+  ... 543초: 상태 inactive   => 6
+  -> 'Game Consumer Lag Stuck' = firing  (13:33:21, 시작 후 603초)
+
+### 비교: 같은 시각 예전 지표 records_lag_max (커밋 기준 lag 전 알림이 보던 것)
+ => 0
+해제: stuck 파일 삭제  13:33:21
+  -> 'Game Consumer Lag Stuck' = inactive  (13:34:22, 시작 후 60초)
+
+### 요약 (주입 -> Grafana firing 까지 초. Slack 도착은 firing 뒤 약 10초 = group_wait)
+DLT 적재: (건너뜀) 초 / 컨슈머 지연: 603 초 (해제 후 inactive 까지 60 초) / Outbox 최장 대기: (건너뜀) 초 (해제 후 inactive 까지 (건너뜀) 초)
+
+### Grafana 로그: 알림 발송 흔적 (slack · notify)
+logger=ngalert.sender.router rule_uid=game-outbox-oldest-pending-high org_id=1 t=2026-10-12T03:54:22.526292266Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-outbox-oldest-pending-high org_id=1 t=2026-10-12T03:55:22.525847309Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.scheduler rule_uid=notification-consumer-lag-stuck org_id=1 t=2026-10-12T04:21:29.809695903Z level=info msg="Stopping alert rule routine" reason="context canceled"
+logger=backgroundsvcs.managerAdapter t=2026-10-12T04:21:29.809889011Z level=info msg="module stopped" module=*notifications.NotificationService
+t=2026-10-12T04:21:29.870058657Z level=info caller=logger.go:214 time=2026-10-12T04:21:29.870029255Z msg="App runner exited without error" app=alerting-notifications
+t=2026-10-12T04:21:35.324339766Z level=info caller=logger.go:214 time=2026-10-12T04:21:35.324325665Z msg="Using channel notifier" logger=sql-resource-server
+logger=ngalert.notifier t=2026-10-12T04:21:35.358530669Z level=info component=alertmanager orgID=1 msg="template definitions loaded" mimir=0 grafana=0 total=0 maxTemplateOutput=10485760
+logger=ngalert.notifier component=alertmanager orgID=1 t=2026-10-12T04:21:35.361036079Z level=info msg="Applying new configuration to Alertmanager" configHash="{14519254120625981992 15062921927464924330 11535544170606148457 1343157387507078592 10278876130067529486 18055517282398016468 5144611013662998819}"
+logger=ngalert.notifier t=2026-10-12T04:21:35.361078681Z level=info component=alertmanager orgID=1 msg="template definitions loaded" mimir=0 grafana=0 total=0 maxTemplateOutput=10485760
+logger=grafana-apiserver t=2026-10-12T04:21:35.831329257Z level=info msg="Adding GroupVersion notifications.alerting.grafana.app v1beta1 to ResourceManager"
+logger=grafana-apiserver t=2026-10-12T04:21:35.832867924Z level=info msg="Adding GroupVersion notifications.alerting.grafana.app v0alpha1 to ResourceManager"
+t=2026-10-12T04:21:35.833018931Z level=info caller=logger.go:214 time=2026-10-12T04:21:35.833010731Z msg="Installed APIs for app" app=alerting-notifications
+t=2026-10-12T04:21:36.268875044Z level=info caller=logger.go:214 time=2026-10-12T04:21:36.268864944Z msg="App initialized" app=alerting-notifications
+logger=backgroundsvcs.managerAdapter t=2026-10-12T04:21:36.838677354Z level=info msg=starting module=*notifications.NotificationService
+logger=ngalert.notifier component=alertmanager orgID=1 t=2026-10-12T04:22:36.892682311Z level=info msg="Applying new configuration to Alertmanager" configHash="{346066468294176292 15062921927464924330 11535544170606148457 1343157387507078592 10278876130067529486 7860489154320603333 5144611013662998819}"
+logger=ngalert.notifier t=2026-10-12T04:22:36.892728813Z level=info component=alertmanager orgID=1 msg="template definitions loaded" mimir=0 grafana=0 total=0 maxTemplateOutput=10485760
+logger=ngalert.sender.router rule_uid=game-consumer-lag-stuck org_id=1 t=2026-10-12T04:33:21.277431638Z level=info msg="Sending alerts to local notifier" count=1
+logger=ngalert.sender.router rule_uid=game-consumer-lag-stuck org_id=1 t=2026-10-12T04:34:21.275443932Z level=info msg="Sending alerts to local notifier" count=1
+
+### 앱 종료
+
+=== 끝. 결과 파일: C:\workspace\health_service\game-service\exp-results\알림_DLT_lag_Outbox_20261012-132128.txt

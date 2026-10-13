@@ -2,30 +2,38 @@
 실험 실행기 (2026-10-11) — 실험 한 회차를 명령 한 줄로.
 
   사용:  cd <저장소 루트>\experiments
-         powershell -ExecutionPolicy Bypass -File .\run_exp.ps1 -Exp A-5
+         powershell -ExecutionPolicy Bypass -File .\run_exp.ps1 -Exp late-events
 
   결과:  <저장소 루트>\game-service\exp-results\<실험>_<시각>.txt  (요약 · 검증 · 분석)
          같은 이름의 .log (앱 로그 원본). Claude 가 이 폴더를 직접 읽는다.
 
-  실험:  A-1  R-12 실경합 (스레드 3)          A-1c 대조군 (스레드 1)
-         A-2  반대 실험 naive-claim            A-5  늦게 온 이벤트 (R-9 · R-10 · R-13)
-         A-7  정합성 대조가 어긋남을 잡는가     A-9  Redis 없이 → UnexpectedRollbackException 0
-         A-11 Redis 정지 중 지급 → 카운터 → 재구축 → 대조 0
-         A-3  지갑 lost update, 고치기 전(읽고 더하고 쓰기)   A-3c 같은 조건, 지금 코드(xp = xp + :amount)
-         A-6  DLT 재처리: 버그로 DLT 간 이벤트 → 수정 배포 → 재처리로 반영 / 이미 처리 · 어제 · 만료 제안은 재처리해도 보상 0 / 깨진 JSON 은 상한 3번에서 멈춤
-         A-8  낙관적 락 충돌: 퀘스트마다 5번 충돌 → 일시 장애로 계속 재시도 → 6번째 성공, DLT 0
-         B-0  관측 구성 준비 확인: Prometheus job=game-blue 수집 · Grafana 알림 규칙 로드 · Loki 에 앱 로그 · Slack 연락처
-         B-12 알림 3종 Slack 도착: DLT 적재 / 컨슈머 지연(10분 지속) / Outbox 최장 대기 — 주입부터 firing 까지 시간
-         B-13 새 알림: 대조 불일치 / 랭킹 반영 실패 / 처리 지연 p95 (+ 선택: 대조 멈춤 -Phases 2, 약 31분)
-         B-16 장애 주입: PostgreSQL 60초 · Kafka 90초 정지 중 흐르는 이벤트 -> DLT 0 · 유실 0 · 중복 0 · 복구 뒤 대조 0
-         B-14 원인 추적: 깨진 JSON · 코드 버그 -> DLT -> Slack -> Loki 에서 eventId 로 원인을 찾을 수 있나 (DLT 헤더와 비교)
-         B-17 trace 이어짐: Health 가 보낸 traceparent -> Game 소비 -> Outbox 적재 -> (다른 스레드) 발행 -> game.events 헤더까지 한 trace 인가
-         B-19 Outbox 발행측: 50건 쌓고 10건째 발행 직후 JVM 즉시 종료(kill -9) -> 재기동 -> 유실 0 · 중복 건수 · 미발행 0
-         B-15 lag 알림 오탐 · 정지 감지: 배경 트래픽(분당 36건) 중 1 평상시 30분 오탐? 2 전 파티션 멈춤 15분 몇 분에 울리나? 3 앱 자체가 15분 죽으면? (약 75분, -Phases 로 고름)
-         C-20 Kafka 3대(R-14): C-19 기동 · 토픽 6개 / ① kafka-2 정지 중 100건 -> 발행 실패 0 / ② 2대 정지 -> NotEnoughReplicas · Outbox 알림 -> 복구 후 유실 0 (끝나면 1대 구성으로 되돌림)
-         A-10 랭킹 재구축 성능: 10만 명, 고치기 전(사용자마다 조회) vs 지금(키셋 SQL) × 배치 100 · 1,000 · 10,000, 재구축 중 ZSCORE 지연
-         A-4  랭킹 쓰기 순서 역전, 고치기 전(ZADD 덮어쓰기)    A-4c 같은 조건, 지금 코드(ZADD GT)
-  주의:  A-1 · A-1c · A-2 · A-3 · A-3c · A-4 · A-4c · A-7 · A-9 · A-11 의 지연 · 모드 인자는 exp/r12-race 브랜치 코드에만 있다(다른 브랜치에선 무시된다).
+  실험 (-Exp 이름):
+    정합성
+      party-race          파티 4명이 같은 순간 기여해도 완료 1번 · XP 1번인가 (스레드 3)
+      party-race-control  같은 조건, 스레드 1 (대조군)
+      party-naive-claim   반대 실험: 완료 판단을 자바에서 하면 누락 · 중복 판정이 생기는가
+      wallet-before       지갑 lost update, 고치기 전(읽고 더하고 쓰기)
+      wallet-now          같은 조건, 지금 코드(xp = xp + :amount)
+      ranking-before      랭킹 쓰기 순서 역전, 고치기 전(ZADD 덮어쓰기)
+      ranking-now         같은 조건, 지금 코드(ZADD GT)
+      late-events         늦게 온 이벤트(어제 이벤트 · 30분 지난 제안)는 보상 0 인가
+      reconcile-detect    정합성 대조가 원장 삭제 · 지갑 변경을 잡는가
+      optimistic-lock     낙관적 락 충돌 5번 -> 일시 장애로 재시도 -> 성공, DLT 0
+      no-redis            Redis 없이 지급 -> 롤백 예외 0
+      redis-down          Redis 정지 중 지급 -> 실패 카운터 -> 재구축 -> 대조 0
+      dlt-replay          버그로 DLT 간 이벤트 -> 수정 배포 -> 재처리 / 이미 처리 · 어제 · 만료는 보상 0
+      ranking-rebuild     랭킹 재구축 10만 명: 고치기 전 vs 키셋 SQL, 배치 크기별 시간과 조회 지연
+    관측 · 장애 (관측 구성을 실행기가 직접 띄운다)
+      observe-check       Prometheus 수집 · 알림 규칙 로드 · Loki 로그 · Slack 연락처 점검
+      alerts-pipeline     알림: DLT 적재 / 컨슈머 지연 / Outbox 최장 대기 (-Phases 123)
+      alerts-consistency  알림: 대조 불일치 / 랭킹 반영 실패 / 처리 지연 p95 (+ -Phases 2 대조 멈춤, 약 31분)
+      root-cause          DLT 알림 뒤 Loki 에서 eventId 로 원인을 찾을 수 있는가
+      lag-alert           배경 트래픽 중 평상시 오탐 / 전 파티션 멈춤 / 앱 다운 감지 (약 75분, -Phases 로 고름)
+      outage              PostgreSQL 60초 · Kafka 90초 정지 중 흐르는 이벤트 -> DLT 0 · 유실 0 · 중복 0
+      trace               Health 의 traceparent -> Game 소비 -> Outbox 발행 -> game.events 헤더까지 한 trace 인가
+      outbox-crash        Outbox 발행 직후 · 커밋 전 JVM 강제 종료 -> 유실 0 · 중복 건수
+      kafka-3-brokers     Kafka 3대: 1대 정지 / 2대 정지 -> 복구 뒤 유실 0 (끝나면 1대 구성으로 되돌림)
+  주의:  지연 · 실패 주입 인자(rpgym.experiment.*)는 실험 브랜치의 코드에만 있다(다른 브랜치에선 무시된다).
 #>
 param(
     [Parameter(Mandatory = $true)][string]$Exp,
@@ -34,7 +42,7 @@ param(
     [string]$Root = (Split-Path -Parent $PSScriptRoot),
     [int]$AppPort = 19012,
     [int]$MaxWaitSec = 600,
-    # B-12 에서 돌릴 단계만 고른다. 예: -Phases 2  (기본 123 = 전부)
+    # 알림(DLT · lag · Outbox) 에서 돌릴 단계만 고른다. 예: -Phases 2  (기본 123 = 전부)
     [string]$Phases = '123'
 )
 
@@ -43,54 +51,54 @@ $ErrorActionPreference = 'Continue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $env:PYTHONIOENCODING = 'utf-8'
 $Here = $PSScriptRoot
-$R12 = 'R12_실경합'
-$A5 = 'A5_늦은이벤트'
+$PartyKit = '파티_동시완료_실경합'
+$LateKit = '늦게온_이벤트'
 $Fast = '--rpgym.reconcile.initial-delay=5000 --rpgym.reconcile.interval=15000'
 $Delay = "--rpgym.experiment.party-tx-delay-ms=$DelayMs"
 
 # ---------------------------------------------------------------- 실험 정의
-$R12Base = @{ Kit = $R12; Cleanup = '99_cleanup.sql'; Gen = 'gen_aligned.py'; Seed = '01_seed_aligned.sql'
-              Template = '02_events_aligned.template.txt'; Events = '02_events_aligned.txt'; Verify = '03_verify_aligned.sql'; Fill = 'R12' }
+$PartyBase = @{ Kit = $PartyKit; Cleanup = '99_cleanup.sql'; Gen = 'gen_aligned.py'; Seed = '01_seed_aligned.sql'
+              Template = '02_events_aligned.template.txt'; Events = '02_events_aligned.txt'; Verify = '03_verify_aligned.sql'; Fill = 'party' }
 function Def($base, $extra) { $h = @{}; foreach ($k in $base.Keys) { $h[$k] = $base[$k] }; foreach ($k in $extra.Keys) { $h[$k] = $extra[$k] }; return $h }
 
 $Experiments = @{
-    'A-1'  = Def $R12Base @{ Desc = 'R-12 실경합: 4명 · 목표 3000 · 스레드 3'; Threads = 3; Args = $Delay; Analyze = @('overlap_report.py') }
-    'A-1c' = Def $R12Base @{ Desc = 'R-12 대조군: 스레드 1'; Threads = 1; Args = "$Delay --spring.kafka.listener.concurrency=1"; Analyze = @('overlap_report.py') }
-    'A-2'  = Def $R12Base @{ Desc = 'R-12 반대 실험: 완료 판단을 자바에서 (naive-claim)'; Threads = 3
+    'party-race'  = Def $PartyBase @{ Desc = '파티 실경합: 4명 · 목표 3000 · 스레드 3'; Threads = 3; Args = $Delay; Analyze = @('overlap_report.py') }
+    'party-race-control' = Def $PartyBase @{ Desc = '파티 실경합 대조군: 스레드 1'; Threads = 1; Args = "$Delay --spring.kafka.listener.concurrency=1"; Analyze = @('overlap_report.py') }
+    'party-naive-claim'  = Def $PartyBase @{ Desc = '파티 실경합 반대 실험: 완료 판단을 자바에서 (naive-claim)'; Threads = 3
                              Args = "$Delay --rpgym.experiment.party-mode=naive-claim"; Analyze = @('a2_report.py', 'overlap_report.py') }
-    'A-5'  = @{ Desc = '늦게 온 이벤트: 어제 이벤트(개인 · 파티) + 30분 넘은 제안'; Kit = $A5; Threads = 3; Args = ''
-                Cleanup = "$A5\99_cleanup_a5.sql"; Gen = 'gen_a5.py'; Seed = '01_seed_a5.sql'; Template = '02_events_a5.template.txt'
-                Events = '02_events_a5.txt'; Verify = '03_verify_a5.sql'; Fill = 'A5'; Analyze = @() }
-    'A-7'  = Def $R12Base @{ Desc = '정합성 대조: 원장 1행 삭제 · 지갑 1명 변경을 게이지가 잡는가'; Threads = 3; Args = "$Fast"; Analyze = @(); Post = 'A-7' }
-    'A-9'  = Def $R12Base @{ Desc = 'Redis 없이 400건: 롤백 예외 0 · 레벨은 커밋 · 실패 카운터 400'; Threads = 3; Args = ''; Analyze = @(); RedisDown = $true; Post = 'A-9' }
-    'A-3'  = Def $R12Base @{ Desc = '지갑 lost update, 고치기 전: 개인(+10) · 파티(+30) 지급이 같은 유저 지갑을 읽고 더하고 쓰기'; Threads = 3
-                             GenArgs = @('--personal'); Analyze = @(); Post = 'A-3'
+    'late-events'  = @{ Desc = '늦게 온 이벤트: 어제 이벤트(개인 · 파티) + 30분 넘은 제안'; Kit = $LateKit; Threads = 3; Args = ''
+                Cleanup = "$LateKit\99_cleanup.sql"; Gen = 'gen.py'; Seed = '01_seed.sql'; Template = '02_events.template.txt'
+                Events = '02_events.txt'; Verify = '03_verify.sql'; Fill = 'late'; Analyze = @() }
+    'reconcile-detect'  = Def $PartyBase @{ Desc = '정합성 대조: 원장 1행 삭제 · 지갑 1명 변경을 게이지가 잡는가'; Threads = 3; Args = "$Fast"; Analyze = @(); Post = 'reconcile-detect' }
+    'no-redis'  = Def $PartyBase @{ Desc = 'Redis 없이 400건: 롤백 예외 0 · 레벨은 커밋 · 실패 카운터 400'; Threads = 3; Args = ''; Analyze = @(); RedisDown = $true; Post = 'no-redis' }
+    'wallet-before'  = Def $PartyBase @{ Desc = '지갑 lost update, 고치기 전: 개인(+10) · 파티(+30) 지급이 같은 유저 지갑을 읽고 더하고 쓰기'; Threads = 3
+                             GenArgs = @('--personal'); Analyze = @(); Post = 'wallet-before'
                              Args = "$Delay --rpgym.experiment.wallet-mode=read-modify-write --rpgym.experiment.wallet-delay-ms=$DelayMs" }
-    'A-3c' = Def $R12Base @{ Desc = '지갑 lost update, 지금 코드: 같은 조건에서 xp = xp + :amount'; Threads = 3
-                             GenArgs = @('--personal'); Analyze = @(); Post = 'A-3'
+    'wallet-now' = Def $PartyBase @{ Desc = '지갑 lost update, 지금 코드: 같은 조건에서 xp = xp + :amount'; Threads = 3
+                             GenArgs = @('--personal'); Analyze = @(); Post = 'wallet-before'
                              Args = "$Delay --rpgym.experiment.wallet-mode=atomic --rpgym.experiment.wallet-delay-ms=$DelayMs" }
-    'A-4'  = Def $R12Base @{ Desc = '랭킹 쓰기 순서 역전, 고치기 전: 지갑을 읽고 ZADD 로 덮어쓰기(늦게 쓴 옛 값이 이긴다)'; Threads = 3
-                             GenArgs = @('--personal'); Analyze = @(); Post = 'A-4'
+    'ranking-before'  = Def $PartyBase @{ Desc = '랭킹 쓰기 순서 역전, 고치기 전: 지갑을 읽고 ZADD 로 덮어쓰기(늦게 쓴 옛 값이 이긴다)'; Threads = 3
+                             GenArgs = @('--personal'); Analyze = @(); Post = 'ranking-before'
                              Args = "$Delay $Fast --rpgym.experiment.wallet-delay-ms=$DelayMs --rpgym.experiment.ranking-stall-below-xp=40 --rpgym.experiment.ranking-stall-ms=2000 --rpgym.experiment.ranking-mode=overwrite" }
-    'A-4c' = Def $R12Base @{ Desc = '랭킹 쓰기 순서 역전, 지금 코드: 같은 조건에서 ZADD GT'; Threads = 3
-                             GenArgs = @('--personal'); Analyze = @(); Post = 'A-4'
+    'ranking-now' = Def $PartyBase @{ Desc = '랭킹 쓰기 순서 역전, 지금 코드: 같은 조건에서 ZADD GT'; Threads = 3
+                             GenArgs = @('--personal'); Analyze = @(); Post = 'ranking-before'
                              Args = "$Delay $Fast --rpgym.experiment.wallet-delay-ms=$DelayMs --rpgym.experiment.ranking-stall-below-xp=40 --rpgym.experiment.ranking-stall-ms=2000 --rpgym.experiment.ranking-mode=gt" }
-    'A-6'  = @{ Desc = 'DLT 재처리: 버그 수정 뒤 반영 · 이미 처리 · 어제 · 만료 제안은 보상 0 · 깨진 JSON 은 상한에서 멈춤'; Kit = 'A6_DLT재처리'; Threads = 3; Args = ''; Post = 'A-6' }
-    'A-8'  = @{ Desc = '낙관적 락 충돌: 퀘스트마다 5번 충돌 -> 일시 장애로 재시도 -> 성공, DLT 0'; Kit = 'A8_낙관적락'; Threads = 3
+    'dlt-replay'  = @{ Desc = 'DLT 재처리: 버그 수정 뒤 반영 · 이미 처리 · 어제 · 만료 제안은 보상 0 · 깨진 JSON 은 상한에서 멈춤'; Kit = 'DLT_재처리'; Threads = 3; Args = ''; Post = 'dlt-replay' }
+    'optimistic-lock'  = @{ Desc = '낙관적 락 충돌: 퀘스트마다 5번 충돌 -> 일시 장애로 재시도 -> 성공, DLT 0'; Kit = '낙관적락_충돌'; Threads = 3
                 Args = '--rpgym.experiment.conflict-user-prefix=a8000001- --rpgym.experiment.conflict-times=5'
-                Cleanup = "A8_낙관적락\99_cleanup_a8.sql"; Gen = 'gen_a8.py'; Seed = '01_seed_a8.sql'; Template = '02_events_a8.template.txt'
-                Events = '02_events_a8.txt'; Verify = '03_verify_a8.sql'; Fill = 'A5'; Analyze = @(); Post = 'A-8' }
-    'B-0'  = @{ Desc = '관측 구성 준비 확인 (docker-compose-observe.yml)'; Kit = '.'; Threads = 3; Args = ''; Post = 'B-0' }
-    'B-12' = @{ Desc = '알림 3종: DLT 적재 · 컨슈머 지연 · Outbox 최장 대기 -> Grafana firing -> Slack'; Kit = 'B12_알림3종'; Threads = 3; Args = ''; Post = 'B-12' }
-    'B-13' = @{ Desc = '새 알림: 대조 불일치 · 랭킹 반영 실패 · 처리 지연 p95 (+ 대조 멈춤) -> Grafana firing -> Slack'; Kit = 'B13_알림5종'; Threads = 3; Args = ''; Post = 'B-13' }
-    'B-16' = @{ Desc = '장애 주입: PostgreSQL 60초 · Kafka 90초 정지 -> DLT 0 · 유실 0 · 중복 0 · 복구 뒤 대조 0'; Kit = 'B16_장애주입'; Threads = 3; Args = ''; Post = 'B-16' }
-    'B-17' = @{ Desc = 'trace 이어짐: traceparent 붙인 이벤트 -> Game 소비 -> Outbox 발행 -> game.events 헤더까지 한 trace (Zipkin)'; Kit = 'B17_trace'; Threads = 3; Args = ''; Post = 'B-17' }
-    'B-19' = @{ Desc = 'Outbox 발행측 최소 한 번: 발행 직후 · PUBLISHED 커밋 전 강제 종료 -> 유실 0 · 중복 건수 · 미발행 0'; Kit = 'B19_발행측'; Threads = 3; Args = ''; Post = 'B-19' }
-    'B-15' = @{ Desc = 'lag 알림 오탐 · 정지 감지: 배경 트래픽 중 평상시 30분 / 전 파티션 멈춤 15분 / 앱 죽음 15분'; Kit = 'B15_lag오탐'; Threads = 3; Args = ''; Post = 'B-15' }
-    'C-20' = @{ Desc = 'Kafka 3대(R-14): 기동 · 토픽 확인 / 1대 정지 중 발행 실패 0 / 2대 정지 -> NotEnoughReplicas -> Outbox 알림 -> 복구 후 유실 0'; Kit = 'C20_kafka3대'; Threads = 3; Args = ''; Post = 'C-20' }
-    'B-14' = @{ Desc = '원인 추적: DLT 알림 뒤 Loki 에서 eventId 로 원인 찾기 (DLT 헤더와 비교)'; Kit = 'B14_원인추적'; Threads = 3; Args = ''; Post = 'B-14' }
-    'A-10' = @{ Desc = '랭킹 재구축 성능: 10만 명, 방식 · 배치 크기별 재구축 시간과 재구축 중 ZSCORE 지연'; Kit = 'A10_재구축'; Threads = 3; Args = ''; Post = 'A-10' }
-    'A-11' = Def $R12Base @{ Desc = 'Redis 정지 중 지급 → 대조가 랭킹 어긋남을 잡고 → 재구축 1회 → 0'; Threads = 3; Args = "$Fast"; Analyze = @(); RedisDown = $true; Post = 'A-11' }
+                Cleanup = "낙관적락_충돌\99_cleanup.sql"; Gen = 'gen.py'; Seed = '01_seed.sql'; Template = '02_events.template.txt'
+                Events = '02_events.txt'; Verify = '03_verify.sql'; Fill = 'late'; Analyze = @(); Post = 'optimistic-lock' }
+    'observe-check'  = @{ Desc = '관측 구성 준비 확인 (docker-compose-observe.yml)'; Kit = '.'; Threads = 3; Args = ''; Post = 'observe-check' }
+    'alerts-pipeline' = @{ Desc = '알림 3종: DLT 적재 · 컨슈머 지연 · Outbox 최장 대기 -> Grafana firing -> Slack'; Kit = '알림_DLT_lag_Outbox'; Threads = 3; Args = ''; Post = 'alerts-pipeline' }
+    'alerts-consistency' = @{ Desc = '새 알림: 대조 불일치 · 랭킹 반영 실패 · 처리 지연 p95 (+ 대조 멈춤) -> Grafana firing -> Slack'; Kit = '알림_대조_랭킹_지연'; Threads = 3; Args = ''; Post = 'alerts-consistency' }
+    'outage' = @{ Desc = '장애 주입: PostgreSQL 60초 · Kafka 90초 정지 -> DLT 0 · 유실 0 · 중복 0 · 복구 뒤 대조 0'; Kit = 'DB_Kafka_정지'; Threads = 3; Args = ''; Post = 'outage' }
+    'trace' = @{ Desc = 'trace 이어짐: traceparent 붙인 이벤트 -> Game 소비 -> Outbox 발행 -> game.events 헤더까지 한 trace (Zipkin)'; Kit = 'trace_이어짐'; Threads = 3; Args = ''; Post = 'trace' }
+    'outbox-crash' = @{ Desc = 'Outbox 발행측 최소 한 번: 발행 직후 · PUBLISHED 커밋 전 강제 종료 -> 유실 0 · 중복 건수 · 미발행 0'; Kit = 'Outbox_강제종료'; Threads = 3; Args = ''; Post = 'outbox-crash' }
+    'lag-alert' = @{ Desc = 'lag 알림 오탐 · 정지 감지: 배경 트래픽 중 평상시 30분 / 전 파티션 멈춤 15분 / 앱 죽음 15분'; Kit = 'lag알림_오탐_다운감지'; Threads = 3; Args = ''; Post = 'lag-alert' }
+    'kafka-3-brokers' = @{ Desc = 'Kafka 3대: 기동 · 토픽 확인 / 1대 정지 중 발행 실패 0 / 2대 정지 -> NotEnoughReplicas -> Outbox 알림 -> 복구 후 유실 0'; Kit = 'Kafka_3대_장애'; Threads = 3; Args = ''; Post = 'kafka-3-brokers' }
+    'root-cause' = @{ Desc = '원인 추적: DLT 알림 뒤 Loki 에서 eventId 로 원인 찾기 (DLT 헤더와 비교)'; Kit = '알림뒤_원인추적'; Threads = 3; Args = ''; Post = 'root-cause' }
+    'ranking-rebuild' = @{ Desc = '랭킹 재구축 성능: 10만 명, 방식 · 배치 크기별 재구축 시간과 재구축 중 ZSCORE 지연'; Kit = '랭킹_재구축_10만명'; Threads = 3; Args = ''; Post = 'ranking-rebuild' }
+    'redis-down' = Def $PartyBase @{ Desc = 'Redis 정지 중 지급 → 대조가 랭킹 어긋남을 잡고 → 재구축 1회 → 0'; Threads = 3; Args = "$Fast"; Analyze = @(); RedisDown = $true; Post = 'redis-down' }
 }
 if (-not $Experiments.ContainsKey($Exp)) {
     Write-Host "모르는 실험: $Exp  (가능: $(($Experiments.Keys | Sort-Object) -join ', '))" -ForegroundColor Red
@@ -162,7 +170,7 @@ W "# 실험 $Exp — $($E.Desc)"
 W "시각: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  /  앱 인자: $($E.Args)"
 W "브랜치: $(& git -C $Root rev-parse --abbrev-ref HEAD 2>&1)  /  커밋: $(& git -C $Root rev-parse --short HEAD 2>&1)"
 
-# ---------------------------------------------------------------- A-6 은 앱을 두 번 띄우는 별도 흐름
+# ---------------------------------------------------------------- DLT 재처리 은 앱을 두 번 띄우는 별도 흐름
 function Start-AppWith([string]$appArgs) {
     W ""; W "### 앱 기동 (앱 인자: $appArgs)"
     $log = $AppLog; $err = $AppErr
@@ -205,12 +213,12 @@ function Replay([bool]$dry) {
 $ObserveCompose = @('-f', 'docker-compose-develop.yml', '-f', 'docker-compose-observe.yml')
 $GrafanaAuth = @{ Authorization = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes('admin:admin')) }
 function Start-Observe {
-    # C-20(Kafka 3대)이 중간에 멈췄다면 남은 브로커를 치운다. kafka 는 아래 up 이 1대 구성으로 다시 만든다
+    # Kafka 3대 장애(Kafka 3대)이 중간에 멈췄다면 남은 브로커를 치운다. kafka 는 아래 up 이 1대 구성으로 다시 만든다
     & docker rm -f rp-gym-kafka-2 rp-gym-kafka-3 rp-gym-kafka-init 2>&1 | Out-Null
     Push-Location $Root
     & docker compose @ObserveCompose up -d postgres-game kafka redis prometheus grafana loki alloy zipkin 2>&1 | ForEach-Object { "$_" }
     # Grafana 는 알림 규칙 파일을 시작할 때만 읽는다. 규칙 파일만 바뀌면 compose 가 컨테이너를 다시 만들지 않으므로 매번 재시작한다
-    # (2026-10-12 R-23 첫 검증: 규칙 식을 바꿨는데 예전 식으로 평가되어 20분 동안 안 울림)
+    # (2026-10-12 커밋 기준 lag 첫 검증: 규칙 식을 바꿨는데 예전 식으로 평가되어 20분 동안 안 울림)
     & docker restart rp-gym-grafana 2>&1 | ForEach-Object { "Grafana 재시작: $_" }
     Pop-Location
     for ($i = 0; $i -lt 40; $i++) {
@@ -267,7 +275,7 @@ function FillProduce([string]$tpl, [hashtable]$map, [string]$topic) {
     [System.IO.File]::WriteAllText($out, $text, (New-Object System.Text.UTF8Encoding $false))
     Produce $out $topic | Out-Null
 }
-if ($E.Post -eq 'B-12') {
+if ($E.Post -eq 'alerts-pipeline') {
     if (Get-NetTCPConnection -LocalPort $AppPort -State Listen -ErrorAction SilentlyContinue) {
         Fail "포트 $AppPort 에 이미 앱이 떠 있다. 다른 터미널의 bootRun 을 Ctrl+C 로 끄고 다시 실행"
     }
@@ -275,9 +283,9 @@ if ($E.Post -eq 'B-12') {
     $pubFlag = Join-Path $OutDir 'b12-publish-fail.flag'
     Remove-Item $stuckFlag, $pubFlag -ErrorAction SilentlyContinue
     Run '관측 구성 기동 (develop + observe, 규칙은 game 만)' { Start-Observe } | Out-Null
-    Run '지난 데이터 정리' { Psql-File (Join-Path $Kit '99_cleanup_b12.sql') } | Out-Null
-    Push-Location $Kit; Run '데이터 생성 (gen_b12.py)' { python gen_b12.py } | Out-Null; Pop-Location
-    Run '시드' { Psql-File (Join-Path $Kit '01_seed_b12.sql') } | Out-Null
+    Run '지난 데이터 정리' { Psql-File (Join-Path $Kit '99_cleanup.sql') } | Out-Null
+    Push-Location $Kit; Run '데이터 생성 (gen.py)' { python gen.py } | Out-Null; Pop-Location
+    Run '시드' { Psql-File (Join-Path $Kit '01_seed.sql') } | Out-Null
     $now = [DateTimeOffset]::Now
     $map = @{ '__TODAY__' = $now.ToString('yyyy-MM-dd'); '__NOW__' = $now.ToString('yyyy-MM-ddTHH:mm:sszzz') }
     $sf = $stuckFlag -replace '\\', '/'; $pf = $pubFlag -replace '\\', '/'
@@ -288,7 +296,7 @@ if ($E.Post -eq 'B-12') {
         try { (Invoke-RestMethod -TimeoutSec 10 -Headers $GrafanaAuth 'http://localhost:3000/api/v1/provisioning/alert-rules/game-consumer-lag-stuck').data | ForEach-Object { $_.model.expr } | Where-Object { $_ } }
         catch { "규칙 조회 실패: $($_.Exception.Message)" }
     } | Out-Null
-    Run '커밋 기준 lag 지표가 들어오는지 (R-23, 기대: 파티션 3줄)' { PromQuery 'rpgym_game_consumer_group_lag{job=~"game-.*"}' } | Out-Null
+    Run '커밋 기준 lag 지표가 들어오는지 (커밋 기준 lag, 기대: 파티션 3줄)' { PromQuery 'rpgym_game_consumer_group_lag{job=~"game-.*"}' } | Out-Null
 
     $s1 = $s2 = $s2r = $s3 = $s3r = '(건너뜀)'
     if ($Phases -match '1') {
@@ -297,7 +305,7 @@ if ($E.Post -eq 'B-12') {
     FillProduce '02_p1_dlt' $map 'health.events'
     $s1 = WaitRule 'Game Consumer DLT Detected' 'firing' 300 'sum(rpgym_kafka_consumer_dlt_total{job=~"game-.*"})'
     }
-    # 2) 지연: 지켜볼 지표 = 커밋 기준 lag(R-23, 알림이 쓰는 것) + 예전 records_lag_max(비교용)
+    # 2) 지연: 지켜볼 지표 = 커밋 기준 lag(커밋 기준 lag, 알림이 쓰는 것) + 예전 records_lag_max(비교용)
     $lagWatch = 'max(rpgym_game_consumer_group_lag{job=~"game-.*"}) or vector(-1)'
     if ($Phases -match '2') {
 
@@ -306,7 +314,7 @@ if ($E.Post -eq 'B-12') {
     W "주입: stuck 파일 생성 + 같은 유저 이벤트 6건  $(Get-Date -Format 'HH:mm:ss')"
     FillProduce '03_p2_lag' $map 'health.events'
     $s2 = WaitRule 'Game Consumer Lag Stuck' 'firing' 1200 $lagWatch
-    Run '비교: 같은 시각 예전 지표 records_lag_max (R-23 전 알림이 보던 것)' { PromQuery 'max(kafka_consumer_fetch_manager_records_lag_max{job=~"game-.*"})' } | Out-Null
+    Run '비교: 같은 시각 예전 지표 records_lag_max (커밋 기준 lag 전 알림이 보던 것)' { PromQuery 'max(kafka_consumer_fetch_manager_records_lag_max{job=~"game-.*"})' } | Out-Null
     Remove-Item $stuckFlag -ErrorAction SilentlyContinue
     W "해제: stuck 파일 삭제  $(Get-Date -Format 'HH:mm:ss')"
     $s2r = WaitRule 'Game Consumer Lag Stuck' 'inactive' 300 $lagWatch
@@ -377,13 +385,13 @@ function LokiFind([string]$logql, [DateTimeOffset]$since, [int]$show = 5) {
         $lines | Select-Object -First $show | ForEach-Object { "    | " + $(if ($_.Length -gt 230) { $_.Substring(0, 230) + ' …' } else { $_ }) }
     } catch { "Loki 조회 실패: $($_.Exception.Message)" }
 }
-if ($E.Post -eq 'B-14') {
+if ($E.Post -eq 'root-cause') {
     if (Get-NetTCPConnection -LocalPort $AppPort -State Listen -ErrorAction SilentlyContinue) {
         Fail "포트 $AppPort 에 이미 앱이 떠 있다. 다른 터미널의 bootRun 을 Ctrl+C 로 끄고 다시 실행"
     }
     Run '관측 구성 기동 (develop + observe, 규칙은 game 만)' { Start-Observe } | Out-Null
-    Run '지난 데이터 정리' { Psql-File (Join-Path $Kit '99_cleanup_b14.sql') } | Out-Null
-    Push-Location $Kit; Run '데이터 생성 (gen_b14.py)' { python gen_b14.py } | Out-Null; Pop-Location
+    Run '지난 데이터 정리' { Psql-File (Join-Path $Kit '99_cleanup.sql') } | Out-Null
+    Push-Location $Kit; Run '데이터 생성 (gen.py)' { python gen.py } | Out-Null; Pop-Location
     $now = [DateTimeOffset]::Now
     $map = @{ '__TODAY__' = $now.ToString('yyyy-MM-dd'); '__NOW__' = $now.ToString('yyyy-MM-ddTHH:mm:sszzz') }
     # Eureka 가 없어서 30초마다 찍히는 heartbeat ERROR 가 ERROR 검색을 덮으므로 이 실험에서는 끈다
@@ -412,8 +420,8 @@ if ($E.Post -eq 'B-14') {
     Run 'Loki: 코드 버그 유저 id 로' { LokiFind '{job="game-blue"} |= "b1400002-0000-4000-8000-000000000001"' $from } | Out-Null
     Run 'Loki: DLT · 예외 단어로 (계약 위반 · 리스너 실패 · 재시도 소진)' { LokiFind '{job="game-blue"} |~ "(?i)DLT|dead.?letter|ContractViolation|ListenerExecutionFailed|exhausted|injected bug"' $from 8 } | Out-Null
     Run 'Loki: ERROR 줄 전부 (주입 이후)' { LokiFind '{job="game-blue"} |= " ERROR "' $from 8 } | Out-Null
-    Run 'Loki: R-24 DLT 적재 줄 (기대 2줄: 위치 · eventId · 원인)' { LokiFind '{job="game-blue"} |= "DLT 적재"' $from 8 } | Out-Null
-    Run 'Loki: R-24 재시도 줄 (기대: 버그 건 시도 1~4회, 깨진 JSON 은 재시도 없음)' { LokiFind '{job="game-blue"} |= "컨슈머 처리 실패"' $from 8 } | Out-Null
+    Run 'Loki: DLT 경로 로그 DLT 적재 줄 (기대 2줄: 위치 · eventId · 원인)' { LokiFind '{job="game-blue"} |= "DLT 적재"' $from 8 } | Out-Null
+    Run 'Loki: DLT 경로 로그 재시도 줄 (기대: 버그 건 시도 1~4회, 깨진 JSON 은 재시도 없음)' { LokiFind '{job="game-blue"} |= "컨슈머 처리 실패"' $from 8 } | Out-Null
 
     W ""; W "## 사람이 하는 일 2: DLT 레코드 헤더 직접 열기 (주입 전 끝 오프셋부터)"
     foreach ($p in ($before.Keys | Sort-Object)) {
@@ -424,7 +432,7 @@ if ($E.Post -eq 'B-14') {
         W "  파티션 $p · 키/식별자: $($keys -join ', ')"
         foreach ($m in [regex]::Matches($raw, 'kafka_dlt-exception-(?:cause-)?fqcn:([^,\n]+)')) { W "    예외 클래스: $($m.Groups[1].Value)" }
         foreach ($m in [regex]::Matches($raw, 'kafka_dlt-exception-message:([^\n]{0,200})')) { W "    예외 메시지: $($m.Groups[1].Value)" }
-        # 원본 오프셋 헤더는 8바이트 숫자라 콘솔에서 깨진다. R-24 로그 줄의 @오프셋으로 대신 본다
+        # 원본 오프셋 헤더는 8바이트 숫자라 콘솔에서 깨진다. DLT 경로 로그 로그 줄의 @오프셋으로 대신 본다
     }
     Run 'DLT 적재 카운터 (기대 2)' { Metrics '^rpgym_kafka_consumer_dlt_total' } | Out-Null
     W ""; W "### 앱 종료"
@@ -433,7 +441,7 @@ if ($E.Post -eq 'B-14') {
     exit 0
 }
 
-# ---------------------------------------------------------------- B-17: trace 이어짐
+# ---------------------------------------------------------------- trace 이어짐: trace 이어짐
 function OffsetMapOf([string]$topic) {
     $m = @{}
     $pat = '^' + [regex]::Escape($topic) + ':(\d+):(\d+)'
@@ -454,17 +462,17 @@ function ShowSpans($spans) {
     }
 }
 function OX([bool]$ok) { if ($ok) { 'O' } else { 'X' } }
-if ($E.Post -eq 'B-17') {
+if ($E.Post -eq 'trace') {
     if (Get-NetTCPConnection -LocalPort $AppPort -State Listen -ErrorAction SilentlyContinue) {
         Fail "포트 $AppPort 에 이미 앱이 떠 있다. 다른 터미널의 bootRun 을 Ctrl+C 로 끄고 다시 실행"
     }
     $tid = 'b1700000000000000000000000000001'; $psid = 'b170000000000001'
     Run '관측 구성 기동 (develop + observe, 규칙은 game 만)' { Start-Observe } | Out-Null
-    Run '지난 데이터 정리' { Psql-File (Join-Path $Kit '99_cleanup_b17.sql') } | Out-Null
-    $b17Lua = "local n=0 for _,m in ipairs(redis.call('ZRANGE',KEYS[1],0,-1)) do if string.sub(m,1,9)=='b1700001-' then redis.call('ZREM',KEYS[1],m) n=n+1 end end return n"
-    W "랭킹에서 지난 실험 유저 지우기: $((& docker exec rp-gym-redis redis-cli EVAL $b17Lua 1 ranking:global 2>&1) -join ' ')"
-    Push-Location $Kit; Run '데이터 생성 (gen_b17.py)' { python gen_b17.py } | Out-Null; Pop-Location
-    Run '시드' { Psql-File (Join-Path $Kit '01_seed_b17.sql') } | Out-Null
+    Run '지난 데이터 정리' { Psql-File (Join-Path $Kit '99_cleanup.sql') } | Out-Null
+    $kitLua = "local n=0 for _,m in ipairs(redis.call('ZRANGE',KEYS[1],0,-1)) do if string.sub(m,1,9)=='b1700001-' then redis.call('ZREM',KEYS[1],m) n=n+1 end end return n"
+    W "랭킹에서 지난 실험 유저 지우기: $((& docker exec rp-gym-redis redis-cli EVAL $kitLua 1 ranking:global 2>&1) -join ' ')"
+    Push-Location $Kit; Run '데이터 생성 (gen.py)' { python gen.py } | Out-Null; Pop-Location
+    Run '시드' { Psql-File (Join-Path $Kit '01_seed.sql') } | Out-Null
     $now = [DateTimeOffset]::Now
     $map = @{ '__TODAY__' = $now.ToString('yyyy-MM-dd'); '__NOW__' = $now.ToString('yyyy-MM-ddTHH:mm:sszzz') }
     Start-AppWith '--eureka.client.enabled=false'
@@ -488,7 +496,7 @@ if ($E.Post -eq 'B-17') {
     $t0 = Get-Date; $n = 0
     while (((Get-Date) - $t0).TotalSeconds -lt 60) { $n = CountSql $q; if ($n -ge 2) { break }; Start-Sleep -Seconds 2 }
     W "Outbox 발행 (기대 2): $n  ($([int]((Get-Date) - $t0).TotalSeconds)초)"
-    Run 'Outbox 행에 저장된 trace_context (R-17: 적재 때 traceparent 저장)' {
+    Run 'Outbox 행에 저장된 trace_context (Outbox trace 연결: 적재 때 traceparent 저장)' {
         Sql "SELECT right(aggregate_id::text, 3) AS q, event_type, status, trace_context FROM game_service.outbox_events WHERE aggregate_id::text LIKE 'b1700002%' ORDER BY aggregate_id;"
     } | Out-Null
     W "Zipkin 전송 대기 (15초: span 은 비동기로 모아 보낸다)"; Start-Sleep -Seconds 15
@@ -528,7 +536,7 @@ if ($E.Post -eq 'B-17') {
 
     W ""; W "## 판정"
     W "  [$(OX $okIn)] 입구: Game 소비 span 의 부모 = 넣은 span $psid (Health 의 trace 를 이어 받음)"
-    W "  [$(OX $okRelay)] 같은 trace 안에 'outbox publish' span (다른 스레드 · 다른 트랜잭션의 발행이 이어 붙음, R-17)"
+    W "  [$(OX $okRelay)] 같은 trace 안에 'outbox publish' span (다른 스레드 · 다른 트랜잭션의 발행이 이어 붙음, Outbox trace 연결)"
     W "  [$(OX $okSend)] 같은 trace 안에 game.events 발행 span (PRODUCER)"
     W "  [$(OX $okOut)] 출구: game.events 레코드 traceparent 의 traceId = $tid"
     W "  [$(OX $okCtl)] 대조: 헤더 없는 건은 다른 traceId, 소비 span 이 뿌리"
@@ -539,9 +547,9 @@ if ($E.Post -eq 'B-17') {
     exit 0
 }
 
-# ---------------------------------------------------------------- B-19: Outbox 발행측 최소 한 번
+# ---------------------------------------------------------------- Outbox 발행 중 강제 종료: Outbox 발행측 최소 한 번
 function ReadGameEvents([hashtable]$from, [string]$userRegex) {
-    # 원본 줄을 결과 파일 옆에 남긴다(세기가 이상하면 이 파일로 직접 센다). 2026-10-12 B-19 · C-20 에서 0 줄로 나온 원인 추적용
+    # 원본 줄을 결과 파일 옆에 남긴다(세기가 이상하면 이 파일로 직접 센다). 2026-10-12 Outbox 발행 중 강제 종료 · Kafka 3대 장애 에서 0 줄로 나온 원인 추적용
     $dump = $Result -replace '\.txt$', "-gameevents-$((Get-Date).ToString('HHmmss')).txt"
     $all = @()
     foreach ($k in @($from.Keys | Sort-Object)) {
@@ -554,7 +562,7 @@ function ReadGameEvents([hashtable]$from, [string]$userRegex) {
     return ,$hit
 }
 function EventIdsOf($lines) { @($lines | ForEach-Object { if ($_ -match '"eventId"\s*:\s*"([0-9a-f-]{36})"') { $Matches[1] } }) }
-if ($E.Post -eq 'B-19') {
+if ($E.Post -eq 'outbox-crash') {
     if (Get-NetTCPConnection -LocalPort $AppPort -State Listen -ErrorAction SilentlyContinue) {
         Fail "포트 $AppPort 에 이미 앱이 떠 있다. 다른 터미널의 bootRun 을 Ctrl+C 로 끄고 다시 실행"
     }
@@ -564,11 +572,11 @@ if ($E.Post -eq 'B-19') {
     $crashFlag = Join-Path $OutDir 'b19-crash.flag'
     Remove-Item $pubFlag, $crashFlag -ErrorAction SilentlyContinue
     Run '관측 구성 기동 (develop + observe)' { Start-Observe } | Out-Null
-    Run '지난 데이터 정리' { Psql-File (Join-Path $Kit '99_cleanup_b19.sql') } | Out-Null
-    $b19Lua = "local n=0 for _,m in ipairs(redis.call('ZRANGE',KEYS[1],0,-1)) do if string.sub(m,1,9)=='b1900001-' then redis.call('ZREM',KEYS[1],m) n=n+1 end end return n"
-    W "랭킹에서 지난 실험 유저 지우기: $((& docker exec rp-gym-redis redis-cli EVAL $b19Lua 1 ranking:global 2>&1) -join ' ')"
-    Push-Location $Kit; Run '데이터 생성 (gen_b19.py)' { python gen_b19.py } | Out-Null; Pop-Location
-    Run '시드' { Psql-File (Join-Path $Kit '01_seed_b19.sql') } | Out-Null
+    Run '지난 데이터 정리' { Psql-File (Join-Path $Kit '99_cleanup.sql') } | Out-Null
+    $kitLua = "local n=0 for _,m in ipairs(redis.call('ZRANGE',KEYS[1],0,-1)) do if string.sub(m,1,9)=='b1900001-' then redis.call('ZREM',KEYS[1],m) n=n+1 end end return n"
+    W "랭킹에서 지난 실험 유저 지우기: $((& docker exec rp-gym-redis redis-cli EVAL $kitLua 1 ranking:global 2>&1) -join ' ')"
+    Push-Location $Kit; Run '데이터 생성 (gen.py)' { python gen.py } | Out-Null; Pop-Location
+    Run '시드' { Psql-File (Join-Path $Kit '01_seed.sql') } | Out-Null
     $now = [DateTimeOffset]::Now
     $map = @{ '__TODAY__' = $now.ToString('yyyy-MM-dd'); '__NOW__' = $now.ToString('yyyy-MM-ddTHH:mm:sszzz') }
     $qAll = "SELECT count(*) FROM game_service.outbox_events WHERE aggregate_id::text LIKE 'b1900002%';"
@@ -602,11 +610,11 @@ if ($E.Post -eq 'B-19') {
     }
     $died = -not (Get-NetTCPConnection -LocalPort $AppPort -State Listen -ErrorAction SilentlyContinue)
     W "  앱 종료 확인: $died  ($([math]::Round(((Get-Date) - $t0).TotalSeconds, 1))초)"
-    if (-not $died) { Fail '앱이 스스로 멈추지 않았다 (crash-after-send-flag 가 안 먹음 = exp/r12-race 브랜치 코드인지 확인)' }
+    if (-not $died) { Fail '앱이 스스로 멈추지 않았다 (crash-after-send-flag 가 안 먹음 = 실험 브랜치 코드인지 확인)' }
     Start-Sleep -Seconds 5
     if ($script:Gradle -and -not $script:Gradle.HasExited) { & taskkill /T /F /PID $script:Gradle.Id 2>&1 | Out-Null }
     Remove-Item $crashFlag -ErrorAction SilentlyContinue
-    Run '죽기 직전 앱 로그 [B-19]' { Select-String -Path $crashLog -Pattern '\[B-19\]' | ForEach-Object { ($_.Line -split ' : ', 2)[-1] } } | Out-Null
+    Run '죽기 직전 앱 로그 [Outbox 발행 중 강제 종료]' { Select-String -Path $crashLog -Pattern '\[Outbox 발행 중 강제 종료\]' | ForEach-Object { ($_.Line -split ' : ', 2)[-1] } } | Out-Null
     Run 'Outbox 상태 (기대: 여전히 PENDING 50 = PUBLISHED 표시가 커밋되지 않음)' { Sql $qStatus } | Out-Null
     $mid = ReadGameEvents $before 'b1900001-'
     W "game.events 에 이미 나간 b19 레코드 (기대 $crashAt): $($mid.Count)"
@@ -648,7 +656,7 @@ if ($E.Post -eq 'B-19') {
     exit 0
 }
 
-# ---------------------------------------------------------------- B-15: lag 알림 오탐 · 정지 감지
+# ---------------------------------------------------------------- lag 알림 오탐 · 다운 감지: lag 알림 오탐 · 정지 감지
 function RuleStateHealth([string]$name) {
     try {
         $r = Invoke-RestMethod -TimeoutSec 10 -Headers $GrafanaAuth 'http://localhost:3000/api/prometheus/grafana/api/v1/rules'
@@ -699,20 +707,20 @@ function B15Wait([int]$sec, [string]$tag, [string]$stopWhen) {
         Start-Sleep -Seconds 1
     }
 }
-if ($E.Post -eq 'B-15') {
+if ($E.Post -eq 'lag-alert') {
     if (Get-NetTCPConnection -LocalPort $AppPort -State Listen -ErrorAction SilentlyContinue) {
         Fail "포트 $AppPort 에 이미 앱이 떠 있다. 다른 터미널의 bootRun 을 Ctrl+C 로 끄고 다시 실행"
     }
     $ph = if ($PSBoundParameters.ContainsKey('Phases')) { $Phases } else { '123' }
     $normalMin = 30; $stuckMin = 15; $downMin = 15
-    # 3 단계만 돌릴 때(R-25 확인)는 앱 다운 알림이 울리는 데 3분 남짓이면 되므로 5분만 죽인다
+    # 3 단계만 돌릴 때(서비스 다운 알림 확인)는 앱 다운 알림이 울리는 데 3분 남짓이면 되므로 5분만 죽인다
     if ($ph -eq '3') { $downMin = 5 }
     W "단계: $ph  (1 평상시 $normalMin 분 오탐 확인 · 2 앱은 살아 있고 전 파티션 멈춤 $stuckMin 분 · 3 앱 자체가 죽음 $downMin 분)"
     $script:b15n = 0; $script:b15sent = 0
     $stuckFlag = Join-Path $OutDir 'b15-stuck.flag'
     Remove-Item $stuckFlag -ErrorAction SilentlyContinue
     Run '관측 구성 기동 (develop + observe, 규칙은 game 만)' { Start-Observe } | Out-Null
-    Run '지난 데이터 정리' { Psql-File (Join-Path $Kit '99_cleanup_b15.sql') } | Out-Null
+    Run '지난 데이터 정리' { Psql-File (Join-Path $Kit '99_cleanup.sql') } | Out-Null
     $sf = $stuckFlag -replace '\\', '/'
     $appArgs = "--eureka.client.enabled=false --rpgym.experiment.stuck-user-prefix=b1500001- --rpgym.experiment.stuck-flag=$sf"
     Start-AppWith $appArgs
@@ -743,7 +751,7 @@ if ($E.Post -eq 'B-15') {
     }
     if ($ph -match '3') {
         W ""; W "## 3) 앱 자체가 죽음 $downMin 분 (트래픽은 계속). lag 지표를 앱이 내므로 지표가 사라진다 -> 규칙은 어떻게 되나"
-        # (R-25) 시작 전에 앱 다운 규칙이 풀려 있어야 이번 다운의 시간을 잴 수 있다(지난 실험 사이 앱이 꺼져 있던 동안 firing 이었을 수 있음)
+        # (서비스 다운 알림) 시작 전에 앱 다운 규칙이 풀려 있어야 이번 다운의 시간을 잴 수 있다(지난 실험 사이 앱이 꺼져 있던 동안 firing 이었을 수 있음)
         WaitRule 'Game Service Down' 'inactive' 300 '(sum(up{job=~"game-.*"}) or vector(0))' | Out-Null
         Stop-App
         $tDown = Get-Date
@@ -781,7 +789,7 @@ if ($E.Post -eq 'B-15') {
     exit 0
 }
 
-# ---------------------------------------------------------------- C-19 · C-20: Kafka 3대 (R-14)
+# ---------------------------------------------------------------- Kafka 3대 기동 · Kafka 3대 장애: Kafka 3대 (Kafka 3대 구성)
 function TopicDesc([string]$topic) {
     & docker exec rp-gym-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic $topic 2>&1 |
         ForEach-Object { "$_" } | Where-Object { $_ -match 'Partition:' } | ForEach-Object { '  ' + (($_ -replace '\s+', ' ').Trim() -replace '^Topic: \S+ ', '') }
@@ -793,14 +801,14 @@ function C20Counts([hashtable]$from, [string]$userRegex, [int]$expect) {
     $g = @($ids | Group-Object)
     "  game.events 레코드 $($ids.Count) · 서로 다른 eventId $($g.Count) (기대 $expect) · 2번 이상 나간 eventId $(@($g | Where-Object { $_.Count -gt 1 }).Count)"
 }
-if ($E.Post -eq 'C-20') {
+if ($E.Post -eq 'kafka-3-brokers') {
     if (Get-NetTCPConnection -LocalPort $AppPort -State Listen -ErrorAction SilentlyContinue) {
         Fail "포트 $AppPort 에 이미 앱이 떠 있다. 다른 터미널의 bootRun 을 Ctrl+C 로 끄고 다시 실행"
     }
     $HaCompose = $ObserveCompose + @('-f', 'docker-compose-kafka-ha.yml')
     Run '관측 구성 기동 (develop + observe)' { Start-Observe } | Out-Null
 
-    W ""; W "## C-19) Kafka 3대로 바꿔 띄우기 (rp-gym-kafka 는 3대용 볼륨으로 다시 만들어진다)"
+    W ""; W "## Kafka 3대 기동) Kafka 3대로 바꿔 띄우기 (rp-gym-kafka 는 3대용 볼륨으로 다시 만들어진다)"
     Push-Location $Root
     Run '브로커 3대 + kafka-init' { & docker compose @HaCompose up -d kafka kafka-2 kafka-3 kafka-init 2>&1 | ForEach-Object { "$_" } } | Out-Null
     Pop-Location
@@ -816,11 +824,11 @@ if ($E.Post -eq 'C-20') {
     } | Out-Null
     Run 'game.events 파티션별 리더 · 복제 · ISR (기대: ISR 3대)' { TopicDesc 'game.events' } | Out-Null
 
-    Run '지난 데이터 정리' { Psql-File (Join-Path $Kit '99_cleanup_c20.sql') } | Out-Null
-    $c20Lua = "local n=0 for _,m in ipairs(redis.call('ZRANGE',KEYS[1],0,-1)) do if string.sub(m,1,9)=='c1000001-' then redis.call('ZREM',KEYS[1],m) n=n+1 end end return n"
-    W "랭킹에서 지난 실험 유저 지우기: $((& docker exec rp-gym-redis redis-cli EVAL $c20Lua 1 ranking:global 2>&1) -join ' ')"
-    Push-Location $Kit; Run '데이터 생성 (gen_c20.py)' { python gen_c20.py } | Out-Null; Pop-Location
-    Run '시드' { Psql-File (Join-Path $Kit '01_seed_c20.sql') } | Out-Null
+    Run '지난 데이터 정리' { Psql-File (Join-Path $Kit '99_cleanup.sql') } | Out-Null
+    $kitLua = "local n=0 for _,m in ipairs(redis.call('ZRANGE',KEYS[1],0,-1)) do if string.sub(m,1,9)=='c1000001-' then redis.call('ZREM',KEYS[1],m) n=n+1 end end return n"
+    W "랭킹에서 지난 실험 유저 지우기: $((& docker exec rp-gym-redis redis-cli EVAL $kitLua 1 ranking:global 2>&1) -join ' ')"
+    Push-Location $Kit; Run '데이터 생성 (gen.py)' { python gen.py } | Out-Null; Pop-Location
+    Run '시드' { Psql-File (Join-Path $Kit '01_seed.sql') } | Out-Null
     $now = [DateTimeOffset]::Now
     $map = @{ '__TODAY__' = $now.ToString('yyyy-MM-dd'); '__NOW__' = $now.ToString('yyyy-MM-ddTHH:mm:sszzz') }
     Start-AppWith '--eureka.client.enabled=false --spring.kafka.bootstrap-servers=localhost:19030,localhost:19032,localhost:19033 --rpgym.reconcile.initial-delay=5000 --rpgym.reconcile.interval=15000'
@@ -831,7 +839,7 @@ if ($E.Post -eq 'C-20') {
     $qDone2 = "SELECT count(*) FROM game_service.quests WHERE quest_id::text LIKE 'c1000002%' AND substr(quest_id::text, 25)::bigint BETWEEN 201 AND 220 AND status = 'COMPLETED';"
     $qPend = "SELECT count(*) FROM game_service.outbox_events WHERE aggregate_id::text LIKE 'c1000002%' AND status <> 'PUBLISHED';"
 
-    W ""; W "## C-20 ①) 브로커 1대(kafka-2) 정지: 4초마다 10건씩 10묶음을 흘리는 중 8초에 정지 -> 70초 뒤 재기동"
+    W ""; W "## Kafka 3대 장애 ①) 브로커 1대(kafka-2) 정지: 4초마다 10건씩 10묶음을 흘리는 중 8초에 정지 -> 70초 뒤 재기동"
     $t0 = Get-Date; $k2Stop = $null; $k2Start = $null
     foreach ($c in 1..10) {
         FillProduce ('p1_{0:D2}' -f $c) $map 'health.events'
@@ -855,7 +863,7 @@ if ($E.Post -eq 'C-20') {
     Run '복구 뒤 ISR (기대: 다시 3대)' { TopicDesc 'game.events' } | Out-Null
     Run '대조 게이지 (기대: 전부 0)' { PromQuery 'rpgym_reconcile_mismatch{job=~"game-.*"}' } | Out-Null
 
-    W ""; W "## C-20 ②) 브로커 2대(kafka-2, kafka-3) 정지 -> ISR 1 < min.insync 2 -> acks=all 쓰기 거부"
+    W ""; W "## Kafka 3대 장애 ②) 브로커 2대(kafka-2, kafka-3) 정지 -> ISR 1 < min.insync 2 -> acks=all 쓰기 거부"
     $ner0 = LogCount 'NotEnoughReplicas|NOT_ENOUGH_REPLICAS'
     $pubFail0 = LogCount '발행 실패'
     & docker stop rp-gym-kafka-2 rp-gym-kafka-3 2>&1 | Out-Null; $k23Stop = Get-Date
@@ -886,7 +894,7 @@ if ($E.Post -eq 'C-20') {
     W (C20Counts $before 'c1000001-0000-4000-8000-0000000002\d\d' 20)
     $r2r = WaitRule 'Game Outbox Oldest Pending High' 'inactive' 300 'max(rpgym_game_outbox_oldest_pending_age_seconds{job=~"game-.*"})'
     Start-Sleep -Seconds 20
-    Run '검증 SQL' { Psql-File (Join-Path $Kit '03_verify_c20.sql') } | Out-Null
+    Run '검증 SQL' { Psql-File (Join-Path $Kit '03_verify.sql') } | Out-Null
     Run '대조 게이지 (기대: 전부 0)' { PromQuery 'rpgym_reconcile_mismatch{job=~"game-.*"}' } | Out-Null
     W "DLT 증가 (기대 0): $((DltEnd) - $dlt0)"
     Run '끝 ISR (기대: 3대)' { TopicDesc 'game.events' } | Out-Null
@@ -902,14 +910,14 @@ if ($E.Post -eq 'C-20') {
     exit 0
 }
 
-if ($E.Post -eq 'B-16') {
+if ($E.Post -eq 'outage') {
     if (Get-NetTCPConnection -LocalPort $AppPort -State Listen -ErrorAction SilentlyContinue) {
         Fail "포트 $AppPort 에 이미 앱이 떠 있다. 다른 터미널의 bootRun 을 Ctrl+C 로 끄고 다시 실행"
     }
     Run '관측 구성 기동 (develop + observe, 규칙은 game 만)' { Start-Observe } | Out-Null
-    Run '지난 데이터 정리' { Psql-File (Join-Path $Kit '99_cleanup_b16.sql') } | Out-Null
-    Push-Location $Kit; Run '데이터 생성 (gen_b16.py)' { python gen_b16.py } | Out-Null; Pop-Location
-    Run '시드' { Psql-File (Join-Path $Kit '01_seed_b16.sql') } | Out-Null
+    Run '지난 데이터 정리' { Psql-File (Join-Path $Kit '99_cleanup.sql') } | Out-Null
+    Push-Location $Kit; Run '데이터 생성 (gen.py)' { python gen.py } | Out-Null; Pop-Location
+    Run '시드' { Psql-File (Join-Path $Kit '01_seed.sql') } | Out-Null
     $now = [DateTimeOffset]::Now
     $map = @{ '__TODAY__' = $now.ToString('yyyy-MM-dd'); '__NOW__' = $now.ToString('yyyy-MM-ddTHH:mm:sszzz') }
     Start-AppWith '--rpgym.reconcile.initial-delay=5000 --rpgym.reconcile.interval=15000'
@@ -980,27 +988,27 @@ if ($E.Post -eq 'B-16') {
     Run '대조 게이지 (기대: 전부 0 · 실패 카운터 sql 은 DB 정지 동안 올라갔을 수 있음)' { Metrics '^rpgym_reconcile_' } | Out-Null
     Run '규칙 상태 (기대: 짧은 장애라 firing 없음)' { GameAlertStates } | Out-Null
     W "앱 로그: DB 연결 실패 흔적 $(LogCount 'Connection to .* refused|PSQLException|CannotCreateTransaction|JDBCConnectionException') 줄 · Kafka 연결 끊김 흔적 $(LogCount 'Connection to node .* could not be established|Disconnecting from node|NetworkException') 줄"
-    Run '검증 (03_verify_b16.sql)' { Psql-File (Join-Path $Kit '03_verify_b16.sql') } | Out-Null
+    Run '검증 (03_verify.sql)' { Psql-File (Join-Path $Kit '03_verify.sql') } | Out-Null
     W ""; W "### 앱 종료"
     Stop-App
     W ""; W "=== 끝. 결과 파일: $Result"
     exit 0
 }
 
-if ($E.Post -eq 'B-13') {
+if ($E.Post -eq 'alerts-consistency') {
     if (Get-NetTCPConnection -LocalPort $AppPort -State Listen -ErrorAction SilentlyContinue) {
         Fail "포트 $AppPort 에 이미 앱이 떠 있다. 다른 터미널의 bootRun 을 Ctrl+C 로 끄고 다시 실행"
     }
-    # B-13 의 기본 단계는 1 · 3 · 4 (대조 멈춤 2 는 30분 기준이라 원할 때만 -Phases 2 또는 -Phases 1342)
+    # 알림(대조 · 랭킹 · 처리 지연) 의 기본 단계는 1 · 3 · 4 (대조 멈춤 2 는 30분 기준이라 원할 때만 -Phases 2 또는 -Phases 1342)
     $ph = if ($PSBoundParameters.ContainsKey('Phases')) { $Phases } else { '134' }
     W "단계: $ph  (1 대조 불일치 · 3 랭킹 반영 실패 · 4 처리 지연 p95 · 2 대조 멈춤)"
     $slowFlag = Join-Path $OutDir 'b13-slow.flag'
     $pauseFlag = Join-Path $OutDir 'b13-reconcile-pause.flag'
     Remove-Item $slowFlag, $pauseFlag -ErrorAction SilentlyContinue
     Run '관측 구성 기동 (develop + observe, 규칙은 game 만)' { Start-Observe } | Out-Null
-    Run '지난 데이터 정리' { Psql-File (Join-Path $Kit '99_cleanup_b13.sql') } | Out-Null
-    Push-Location $Kit; Run '데이터 생성 (gen_b13.py)' { python gen_b13.py } | Out-Null; Pop-Location
-    Run '시드' { Psql-File (Join-Path $Kit '01_seed_b13.sql') } | Out-Null
+    Run '지난 데이터 정리' { Psql-File (Join-Path $Kit '99_cleanup.sql') } | Out-Null
+    Push-Location $Kit; Run '데이터 생성 (gen.py)' { python gen.py } | Out-Null; Pop-Location
+    Run '시드' { Psql-File (Join-Path $Kit '01_seed.sql') } | Out-Null
     $now = [DateTimeOffset]::Now
     $map = @{ '__TODAY__' = $now.ToString('yyyy-MM-dd'); '__NOW__' = $now.ToString('yyyy-MM-ddTHH:mm:sszzz') }
     $slf = $slowFlag -replace '\\', '/'; $paf = $pauseFlag -replace '\\', '/'
@@ -1042,7 +1050,7 @@ if ($E.Post -eq 'B-13') {
         Remove-Item $slowFlag -ErrorAction SilentlyContinue
         W "해제: slow 파일 삭제  $(Get-Date -Format 'HH:mm:ss')  (p95 는 5분 창이라 바로 내려가지 않는다)"
         $r4r = WaitRule 'Game Pipeline Latency High' 'inactive' 900 $p95
-        W "[B-13] slowed 로그 줄 수: $(@(Select-String -Path $script:CurLog -Pattern '\[B-13\] slowed' -ErrorAction SilentlyContinue).Count)"
+        W "[알림(대조 · 랭킹 · 처리 지연)] slowed 로그 줄 수: $(@(Select-String -Path $script:CurLog -Pattern '\[알림(대조 · 랭킹 · 처리 지연)\] slowed' -ErrorAction SilentlyContinue).Count)"
     }
     if ($ph -match '2') {
         W ""; W "## 2) 대조 멈춤 (규칙: 마지막 대조 성공이 30분 넘게 지나면. 기대 firing 약 31분)"
@@ -1064,7 +1072,7 @@ if ($E.Post -eq 'B-13') {
     exit 0
 }
 
-if ($E.Post -eq 'B-0') {
+if ($E.Post -eq 'observe-check') {
     if (Get-NetTCPConnection -LocalPort $AppPort -State Listen -ErrorAction SilentlyContinue) {
         Fail "포트 $AppPort 에 이미 앱이 떠 있다. 다른 터미널의 bootRun 을 Ctrl+C 로 끄고 다시 실행"
     }
@@ -1077,7 +1085,7 @@ if ($E.Post -eq 'B-0') {
     W "수집 · 평가 대기 (60초: Prometheus 15초 주기, 알림 규칙 평가 1분 주기)"; Start-Sleep -Seconds 60
     Run 'Prometheus: game-blue 수집 (기대: up => 1)' { PromQuery 'up{job=~"game-.*"}' } | Out-Null
     Run 'Prometheus: 대조 게이지가 game-blue 라벨로 (기대: 5줄, 값 0)' { PromQuery 'rpgym_reconcile_mismatch{job=~"game-.*"}' } | Out-Null
-    Run 'Prometheus: lag 지표 이름 확인 (R-11 메모: 배포 후 확인 필요였던 것)' { PromQuery 'kafka_consumer_fetch_manager_records_lag_max{job=~"game-.*"}' } | Out-Null
+    Run 'Prometheus: lag 지표 이름 확인 (알림 규칙 메모: 배포 후 확인 필요였던 것)' { PromQuery 'kafka_consumer_fetch_manager_records_lag_max{job=~"game-.*"}' } | Out-Null
     Run 'Grafana 알림 규칙 상태 (기대: game-consumer-alerts 그룹이 보이고 health=ok)' { GameAlertStates } | Out-Null
     W ""; W "### Loki: 앱 로그 (기대: 0 보다 큼)"
     W "{job=`"game-blue`"} 최근 5분 줄 수: $(LokiCount '{job="game-blue"}')"
@@ -1087,7 +1095,7 @@ if ($E.Post -eq 'B-0') {
     exit 0
 }
 
-if ($E.Post -eq 'A-6') {
+if ($E.Post -eq 'dlt-replay') {
     if (Get-NetTCPConnection -LocalPort $AppPort -State Listen -ErrorAction SilentlyContinue) {
         Fail "포트 $AppPort 에 이미 앱이 떠 있다. 다른 터미널의 bootRun 을 Ctrl+C 로 끄고 다시 실행"
     }
@@ -1098,11 +1106,11 @@ if ($E.Post -eq 'A-6') {
     Run 'DLT 토픽 (없으면 만든다)' { docker exec rp-gym-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic health.events.DLT --partitions 3 --config retention.ms=1209600000 } | Out-Null
     # 지난 실험이 DLT 에 남긴 레코드를 되돌리지 않도록, 재처리 그룹의 위치를 지금 끝으로 옮긴다
     Run '재처리 그룹 위치를 DLT 끝으로' { docker exec rp-gym-kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --group game-service-dlt-replay --topic health.events.DLT --reset-offsets --to-latest --execute } | Out-Null
-    Run '지난 데이터 정리' { Psql-File (Join-Path $Kit '99_cleanup_a6.sql') } | Out-Null
+    Run '지난 데이터 정리' { Psql-File (Join-Path $Kit '99_cleanup.sql') } | Out-Null
     Push-Location $Kit
-    Run '데이터 생성 (gen_a6.py)' { python gen_a6.py } | Out-Null
+    Run '데이터 생성 (gen.py)' { python gen.py } | Out-Null
     Pop-Location
-    Run '시드' { Psql-File (Join-Path $Kit '01_seed_a6.sql') } | Out-Null
+    Run '시드' { Psql-File (Join-Path $Kit '01_seed.sql') } | Out-Null
 
     # 같은 시각 값을 1단계와 DLT 직접 넣기에 함께 쓴다(D 는 1단계와 완전히 같은 레코드여야 한다)
     $now = [DateTimeOffset]::Now
@@ -1136,7 +1144,7 @@ if ($E.Post -eq 'A-6') {
     W "DLT 증가 합계 (기대 41): $((DltEnd) - $dlt0)"
     Run '1단계 끝 상태 (기대: F ACTIVE 10 · D COMPLETED 10 · Y ACTIVE 10)' { Sql "SELECT substr(quest_id::text, 25, 10) AS grp, status, count(*) FROM game_service.quests WHERE quest_id::text LIKE 'a6000002%' GROUP BY 1, 2 ORDER BY 1, 2;" } | Out-Null
     Run 'DLT 적재 카운터 (기대: 11 = F 10 + 깨진 JSON 1)' { Metrics '^rpgym_kafka_consumer_dlt' } | Out-Null
-    W "[A-6] injected bug 로그 줄 수 (F 10건 × 시도 4번 = 40 근처): $(@(Select-String -Path $script:CurLog -Pattern '\[A-6\] injected bug' -ErrorAction SilentlyContinue).Count)"
+    W "[DLT 재처리] injected bug 로그 줄 수 (F 10건 × 시도 4번 = 40 근처): $(@(Select-String -Path $script:CurLog -Pattern '\[DLT 재처리\] injected bug' -ErrorAction SilentlyContinue).Count)"
     W ""; W "### 앱 종료 (= 버그 수정 배포 준비)"
     Stop-App
     Start-Sleep -Seconds 5
@@ -1155,15 +1163,15 @@ if ($E.Post -eq 'A-6') {
     Run 'DLT 적재 카운터 (2단계 앱 기준: 깨진 JSON 이 돌아온 3)' { Metrics '^rpgym_kafka_consumer_dlt' } | Out-Null
     W "대조 두 주기 대기 (35초)"; Start-Sleep -Seconds 35
     Run '대조 게이지 (기대: 전부 0)' { Metrics '^rpgym_reconcile_' } | Out-Null
-    Run '검증 (04_verify_a6.sql)' { Psql-File (Join-Path $Kit '04_verify_a6.sql') } | Out-Null
+    Run '검증 (04_verify.sql)' { Psql-File (Join-Path $Kit '04_verify.sql') } | Out-Null
     W ""; W "### 앱 종료"
     Stop-App
     W ""; W "=== 끝. 결과 파일: $Result"
     exit 0
 }
 
-# ---------------------------------------------------------------- A-10 은 이벤트를 쓰지 않는 별도 흐름
-if ($E.Post -eq 'A-10') {
+# ---------------------------------------------------------------- 랭킹 재구축 10만 명 은 이벤트를 쓰지 않는 별도 흐름
+if ($E.Post -eq 'ranking-rebuild') {
     if (Get-NetTCPConnection -LocalPort $AppPort -State Listen -ErrorAction SilentlyContinue) {
         Fail "포트 $AppPort 에 이미 앱이 떠 있다. 다른 터미널의 bootRun 을 Ctrl+C 로 끄고 다시 실행"
     }
@@ -1171,9 +1179,9 @@ if ($E.Post -eq 'A-10') {
     Run '인프라 기동' { docker compose -f docker-compose-develop.yml up -d postgres-game kafka redis } | Out-Null
     Pop-Location
     Start-Sleep -Seconds 3
-    $a10Lua = "local n=0 for _,m in ipairs(redis.call('ZRANGE',KEYS[1],0,-1)) do if string.sub(m,1,9)=='88888888-' then redis.call('ZREM',KEYS[1],m) n=n+1 end end return n"
-    Run '시드 10만 명 (지난 회차 정리 포함)' { Psql-File (Join-Path $Kit '01_seed_a10.sql') } | Out-Null
-    Run '실행 계획 (R-22 전후 쿼리)' { Psql-File (Join-Path $Kit '02_explain_a10.sql') } | Out-Null
+    $kitLua = "local n=0 for _,m in ipairs(redis.call('ZRANGE',KEYS[1],0,-1)) do if string.sub(m,1,9)=='88888888-' then redis.call('ZREM',KEYS[1],m) n=n+1 end end return n"
+    Run '시드 10만 명 (지난 회차 정리 포함)' { Psql-File (Join-Path $Kit '01_seed.sql') } | Out-Null
+    Run '실행 계획 (재구축 쿼리 개선 전후 쿼리)' { Psql-File (Join-Path $Kit '02_explain.sql') } | Out-Null
 
     # 정합성 대조는 끈다: 10만 명 랭킹 검사가 재구축과 겹치면 측정이 흔들린다
     W ""; W "### 앱 기동 (로그: $AppLog, 앱 인자: --rpgym.reconcile.enabled=false)"
@@ -1189,12 +1197,12 @@ if ($E.Post -eq 'A-10') {
     Start-Sleep -Seconds 5
 
     # 탐침 대상: 실험 유저 1번. 첫 회차는 JIT 예열용(결과는 참고만)
-    # '지금' 은 R-22 쿼리(테이블마다 인덱스로 읽고 합침), 'R-22 전 쿼리' 는 UNION 을 먼저 만드는 예전 쿼리
+    # '지금' 은 재구축 쿼리 개선 쿼리(테이블마다 인덱스로 읽고 합침), '재구축 쿼리 개선 전 쿼리' 는 UNION 을 먼저 만드는 예전 쿼리
     $probe = '88888888-0000-4000-8000-000000000001'
     $configs = @(
         @{ Name = '예열 (참고만)';            Mode = 'keyset'; Batch = 1000 },
         @{ Name = '고치기 전 · 배치 1,000';   Mode = 'legacy'; Batch = 1000 },
-        @{ Name = 'R-22 전 쿼리 · 배치 1,000'; Mode = 'keyset-union'; Batch = 1000 },
+        @{ Name = '재구축 쿼리 개선 전 쿼리 · 배치 1,000'; Mode = 'keyset-union'; Batch = 1000 },
         @{ Name = '지금 · 배치 100';          Mode = 'keyset'; Batch = 100 },
         @{ Name = '지금 · 배치 1,000';        Mode = 'keyset'; Batch = 1000 },
         @{ Name = '지금 · 배치 10,000';       Mode = 'keyset'; Batch = 10000 }
@@ -1202,7 +1210,7 @@ if ($E.Post -eq 'A-10') {
     $rows = @()
     foreach ($c in $configs) {
         W ""; W "### $($c.Name)  (mode=$($c.Mode), batch=$($c.Batch))"
-        W "랭킹에서 실험 유저 지우기: $((& docker exec rp-gym-redis redis-cli EVAL $a10Lua 1 ranking:global 2>&1) -join ' ')"
+        W "랭킹에서 실험 유저 지우기: $((& docker exec rp-gym-redis redis-cli EVAL $kitLua 1 ranking:global 2>&1) -join ' ')"
         Start-Sleep -Seconds 2
         $wall = [Diagnostics.Stopwatch]::StartNew()
         try {
@@ -1224,8 +1232,8 @@ if ($E.Post -eq 'A-10') {
     ($rows | Format-Table -AutoSize | Out-String -Width 250) -split "`r?`n" | Where-Object { $_ -ne '' } | ForEach-Object { W $_ }
 
     W ""; W "### 정리"
-    W "랭킹에서 실험 유저 지우기: $((& docker exec rp-gym-redis redis-cli EVAL $a10Lua 1 ranking:global 2>&1) -join ' ')"
-    Run 'DB 실험 데이터 지우기' { Psql-File (Join-Path $Kit '99_cleanup_a10.sql') } | Out-Null
+    W "랭킹에서 실험 유저 지우기: $((& docker exec rp-gym-redis redis-cli EVAL $kitLua 1 ranking:global 2>&1) -join ' ')"
+    Run 'DB 실험 데이터 지우기' { Psql-File (Join-Path $Kit '99_cleanup.sql') } | Out-Null
     W ""; W "### 앱 종료"
     Stop-App
     W ""; W "=== 끝. 결과 파일: $Result"
@@ -1249,10 +1257,10 @@ Push-Location $Kit
 $genArgs = @(); if ($E.GenArgs) { $genArgs = $E.GenArgs }
 Run "데이터 생성 ($($E.Gen) $($genArgs -join ' '))" { python $E.Gen @genArgs } | Out-Null
 Pop-Location
-# A-11: 지난 회차가 재구축으로 같은 유저 · 같은 점수를 남겨 두면 Redis 복구 뒤에도 랭킹이 맞아 보인다(2026-10-11 재실행에서 발견). 랭킹 키를 비우고 시작한다
-if ($E.Post -eq 'A-11') { Run '랭킹 키 비우기 (ranking:global)' { docker exec rp-gym-redis redis-cli DEL ranking:global } | Out-Null }
-# A-4: 지난 회차가 남긴 실험 유저 점수(같은 유저 · 더 큰 점수)가 있으면 GT 가 옛 값 쓰기를 막은 것처럼 보인다. 실험 유저(33333333-)만 랭킹에서 지운다
-if ($E.Post -eq 'A-4') {
+# Redis 정지 중 지급: 지난 회차가 재구축으로 같은 유저 · 같은 점수를 남겨 두면 Redis 복구 뒤에도 랭킹이 맞아 보인다(2026-10-11 재실행에서 발견). 랭킹 키를 비우고 시작한다
+if ($E.Post -eq 'redis-down') { Run '랭킹 키 비우기 (ranking:global)' { docker exec rp-gym-redis redis-cli DEL ranking:global } | Out-Null }
+# 랭킹 쓰기 순서 역전(고치기 전): 지난 회차가 남긴 실험 유저 점수(같은 유저 · 더 큰 점수)가 있으면 GT 가 옛 값 쓰기를 막은 것처럼 보인다. 실험 유저(33333333-)만 랭킹에서 지운다
+if ($E.Post -eq 'ranking-before') {
     $lua = "local n=0 for _,m in ipairs(redis.call('ZRANGE',KEYS[1],0,-1)) do if string.sub(m,1,9)=='33333333-' then redis.call('ZREM',KEYS[1],m) n=n+1 end end return n"
     Run '랭킹에서 실험 유저만 지우기 (지운 수)' { docker exec rp-gym-redis redis-cli EVAL $lua 1 ranking:global } | Out-Null
 }
@@ -1277,7 +1285,7 @@ Start-Sleep -Seconds 3
 Run '시드' { Psql-File (Join-Path $Kit $E.Seed) } | Out-Null
 $now = [DateTimeOffset]::Now
 $fmt = 'yyyy-MM-ddTHH:mm:sszzz'
-if ($E.Fill -eq 'R12') {
+if ($E.Fill -eq 'party') {
     $map = @{ '__MEASURED_AT__' = $now.ToString($fmt); '__DATE__' = $now.ToString('yyyy-MM-dd') }
 } else {
     $y = New-Object DateTimeOffset ($now.Date.AddDays(-1).AddHours(23)), $now.Offset
@@ -1308,7 +1316,7 @@ $t1 = Get-Date; $last = -1; $quiet = 0
 while ($true) {
     Start-Sleep -Seconds 5
     if ($script:Gradle.HasExited) { Fail '처리 중에 앱이 꺼졌다' }
-    # 로그 크기가 아니라 '처리 완료' 줄 수로 본다. 대조 실패 · Eureka 재시도 로그는 처리와 상관없이 계속 늘어난다(A-11 첫 실행에서 발견)
+    # 로그 크기가 아니라 '처리 완료' 줄 수로 본다. 대조 실패 · Eureka 재시도 로그는 처리와 상관없이 계속 늘어난다(Redis 정지 중 지급 첫 실행에서 발견)
     $len = LogCount 'HealthEventConsumer.*(result=|outcome=)'
     if ($len -eq $last) { $quiet += 5 } else { $quiet = 0; $last = $len }
     $el = ((Get-Date) - $t1).TotalSeconds
@@ -1318,46 +1326,46 @@ while ($true) {
 
 # ---------------------------------------------------------------- 6. 실험별 후처리 (앱이 떠 있는 동안)
 switch ($E.Post) {
-    'A-9' {
-        W ""; W "### A-9 확인 (기대: 롤백 예외 0 · 레벨 행 400 · redis 실패 카운터 400)"
+    'no-redis' {
+        W ""; W "### Redis 없이 지급 확인 (기대: 롤백 예외 0 · 레벨 행 400 · redis 실패 카운터 400)"
         W "UnexpectedRollbackException 로그 줄 수: $(LogCount 'UnexpectedRollbackException')"
         W "Redis 연결 실패 흔적 줄 수: $(LogCount 'RedisConnectionFailure|Unable to connect to Redis')"
         Run '레벨 행(characters) — 실험 유저' { Sql "SELECT count(*) AS characters_rows, min(level), max(level) FROM game_service.characters WHERE user_id::text LIKE '33333333-0000-4000-8000-%';" } | Out-Null
         Run '실패 카운터' { Metrics '^rpgym_ranking_update_failed' } | Out-Null
         Run 'Redis 다시 켜기' { Start-Redis } | Out-Null
     }
-    'A-11' {
-        W ""; W "### A-11-1 Redis 가 꺼진 동안 (기대: 실패 카운터 redis 400, (R-21 후) SQL 게이지 갱신 · last_success > 0 · rpgym_reconcile_failed_total{stage=ranking} > 0 · stage=sql 0)"
+    'redis-down' {
+        W ""; W "### Redis 정지 중 지급-1 Redis 가 꺼진 동안 (기대: 실패 카운터 redis 400, (대조 단계 분리 후) SQL 게이지 갱신 · last_success > 0 · rpgym_reconcile_failed_total{stage=ranking} > 0 · stage=sql 0)"
         Run '실패 카운터' { Metrics '^rpgym_ranking_update_failed' } | Out-Null
         Run '대조 게이지' { Metrics '^rpgym_reconcile_' } | Out-Null
         Run 'Redis 다시 켜기' { Start-Redis } | Out-Null
         W "대조 두 주기 대기 (40초)"; Start-Sleep -Seconds 40
-        W ""; W "### A-11-2 Redis 복구 후, 재구축 전 (기대: ranking = 재구축 대상 수(지난번 525: 이번 400 + 이전 실험 잔여) · 나머지 0)"
+        W ""; W "### Redis 정지 중 지급-2 Redis 복구 후, 재구축 전 (기대: ranking = 재구축 대상 수(지난번 525: 이번 400 + 이전 실험 잔여) · 나머지 0)"
         Run '대조 게이지' { Metrics '^rpgym_reconcile_mismatch' } | Out-Null
         Run '재구축 호출' { (Invoke-WebRequest -UseBasicParsing -Method Post "http://localhost:$AppPort/api/v1/internal/games/rankings/rebuild" -TimeoutSec 60).Content } | Out-Null
         W "대조 두 주기 대기 (40초)"; Start-Sleep -Seconds 40
-        W ""; W "### A-11-3 재구축 후 (기대: 전부 0)"
+        W ""; W "### Redis 정지 중 지급-3 재구축 후 (기대: 전부 0)"
         Run '대조 게이지' { Metrics '^rpgym_reconcile_' } | Out-Null
     }
-    'A-3' {
-        W ""; W "### A-3 지갑 (기대: 개인 완료 400 · 원장 QUEST 400건 4000 + PARTY_QUEST 400건 12000. 지갑 = 원장 합이면 0 / A-3 은 어긋난 유저가 나와야 재현, A-3c 는 0)"
+    'wallet-before' {
+        W ""; W "### 지갑 lost update(고치기 전) 지갑 (기대: 개인 완료 400 · 원장 QUEST 400건 4000 + PARTY_QUEST 400건 12000. 지갑 = 원장 합이면 0 / 지갑 lost update(고치기 전) 은 어긋난 유저가 나와야 재현, 지갑 lost update(지금 코드) 는 0)"
         Run '개인 퀘스트 완료' { Sql "SELECT status, count(*) FROM game_service.quests WHERE quest_id::text LIKE '66666666-0000-4000-8000-%' GROUP BY status;" } | Out-Null
         Run '원장 (출처별)' { Sql "SELECT source_type, count(*) AS rows, sum(amount) AS xp FROM game_service.xp_ledgers WHERE user_id::text LIKE '33333333-0000-4000-8000-%' GROUP BY source_type ORDER BY 1;" } | Out-Null
         Run '지갑 <> 원장 합 (lost update)' { Sql "WITH l AS (SELECT user_id, sum(amount) AS total FROM game_service.xp_ledgers WHERE user_id::text LIKE '33333333-0000-4000-8000-%' GROUP BY user_id) SELECT count(*) AS mismatched_users, coalesce(sum(l.total - w.xp), 0) AS lost_xp, count(*) FILTER (WHERE l.total - w.xp = 10) AS lost_personal_10, count(*) FILTER (WHERE l.total - w.xp = 30) AS lost_party_30, count(*) FILTER (WHERE l.total - w.xp NOT IN (10, 30)) AS other FROM game_service.wallets w JOIN l USING (user_id) WHERE w.xp <> l.total;" } | Out-Null
         Run '지갑 합계' { Sql "SELECT count(*) AS wallets, sum(xp) AS wallet_xp FROM game_service.wallets WHERE user_id::text LIKE '33333333-0000-4000-8000-%';" } | Out-Null
-        W "[A-3] rmw 로그 줄 수 (A-3 은 800, A-3c 는 0): $(LogCount '\[A-3\] rmw')"
+        W "[지갑 lost update(고치기 전)] rmw 로그 줄 수 (지갑 lost update(고치기 전) 은 800, 지갑 lost update(지금 코드) 는 0): $(LogCount '\[지갑 lost update(고치기 전)\] rmw')"
     }
-    'A-4' {
-        W ""; W "### A-4 랭킹 (지갑을 40 미만으로 읽은 리스너만 2초 멈춤 = 옛 값을 읽은 쪽의 GC 정지를 인위적으로 주입. 기대: 지갑 = 원장. 대조 ranking = 랭킹 점수가 지갑과 다른 유저 수(두 주기 연속). A-4 는 0 보다 커야 재현, A-4c 는 0)"
-        Run '지갑 <> 원장 합 (A-4 는 지갑을 원자 갱신하므로 0 이어야 한다)' { Sql "WITH l AS (SELECT user_id, sum(amount) AS total FROM game_service.xp_ledgers WHERE user_id::text LIKE '33333333-0000-4000-8000-%' GROUP BY user_id) SELECT count(*) AS mismatched_users FROM game_service.wallets w JOIN l USING (user_id) WHERE w.xp <> l.total;" } | Out-Null
+    'ranking-before' {
+        W ""; W "### 랭킹 쓰기 순서 역전(고치기 전) 랭킹 (지갑을 40 미만으로 읽은 리스너만 2초 멈춤 = 옛 값을 읽은 쪽의 GC 정지를 인위적으로 주입. 기대: 지갑 = 원장. 대조 ranking = 랭킹 점수가 지갑과 다른 유저 수(두 주기 연속). 랭킹 쓰기 순서 역전(고치기 전) 는 0 보다 커야 재현, 랭킹 쓰기 순서 역전(지금 코드) 는 0)"
+        Run '지갑 <> 원장 합 (랭킹 쓰기 순서 역전(고치기 전) 는 지갑을 원자 갱신하므로 0 이어야 한다)' { Sql "WITH l AS (SELECT user_id, sum(amount) AS total FROM game_service.xp_ledgers WHERE user_id::text LIKE '33333333-0000-4000-8000-%' GROUP BY user_id) SELECT count(*) AS mismatched_users FROM game_service.wallets w JOIN l USING (user_id) WHERE w.xp <> l.total;" } | Out-Null
         W "대조 두 주기 대기 (40초)"; Start-Sleep -Seconds 40
         Run '대조 게이지' { Metrics '^rpgym_reconcile_' } | Out-Null
         W "대조 ERROR 로그 (어긋난 id 샘플): $(LogCount 'check=ranking count=\d+')"
-        W "[A-4] zadd 로그 줄 수 (두 모드 모두 800): $(LogCount '\[A-4\] zadd')"
+        W "[랭킹 쓰기 순서 역전(고치기 전)] zadd 로그 줄 수 (두 모드 모두 800): $(LogCount '\[랭킹 쓰기 순서 역전(고치기 전)\] zadd')"
         Run '레벨 행(characters) — 실험 유저' { Sql "SELECT count(*) AS characters_rows, min(level), max(level) FROM game_service.characters WHERE user_id::text LIKE '33333333-0000-4000-8000-%';" } | Out-Null
     }
-    'A-8' {
-        W ""; W "### A-8 (기대: 완료 10 · 충돌 로그 50줄 · DLT 카운터 0)"
+    'optimistic-lock' {
+        W ""; W "### 낙관적 락 충돌 (기대: 완료 10 · 충돌 로그 50줄 · DLT 카운터 0)"
         $t8 = Get-Date
         while ($true) {
             $done = ((Sql "SELECT count(*) FROM game_service.quests WHERE quest_id::text LIKE 'a8000002%' AND status = 'COMPLETED';") -match '^\s*\d+\s*$' | Select-Object -First 1)
@@ -1365,13 +1373,13 @@ switch ($E.Post) {
             if (((Get-Date) - $t8).TotalSeconds -gt 180) { W "!!! 3분 더 기다려도 완료 $done"; break }
             Start-Sleep -Seconds 5
         }
-        W "[A-8] 충돌 주입 로그 줄 수: $(LogCount '\[A-8\] conflict injected')"
+        W "[낙관적 락 충돌] 충돌 주입 로그 줄 수: $(LogCount '\[낙관적 락 충돌\] conflict injected')"
         W "낙관적 락 예외 흔적 줄 수: $(LogCount 'ObjectOptimisticLockingFailure|OptimisticLock|StaleObjectState')"
         Run 'DLT 적재 카운터 (기대 0)' { Metrics '^rpgym_kafka_consumer_dlt' } | Out-Null
         Run '퀘스트별 첫 처리 ~ 완료 (충돌 5번 × 재시도 2초 = 10초 안팎)' { Sql "SELECT substr(quest_id::text, 25) AS quest, version, to_char(updated_at, 'HH24:MI:SS') AS completed_at FROM game_service.quests WHERE quest_id::text LIKE 'a8000002%' ORDER BY 1;" } | Out-Null
     }
-    'A-7' {
-        W ""; W "### A-7-1 손대기 전 (기대: 전부 0)"
+    'reconcile-detect' {
+        W ""; W "### 정합성 대조 검출-1 손대기 전 (기대: 전부 0)"
         Start-Sleep -Seconds 20
         Run '대조 게이지' { Metrics '^rpgym_reconcile_mismatch' } | Out-Null
         Run '일부러 어긋내기: 파티 1 의 원장 1행 삭제 · 파티 2 멤버 1명 지갑 +100' {
@@ -1379,7 +1387,7 @@ switch ($E.Post) {
             Sql "UPDATE game_service.wallets SET xp = xp + 100 WHERE user_id = (SELECT m.user_id FROM game_service.party_quest_members m JOIN game_service.wallets w ON w.user_id = m.user_id WHERE m.party_quest_id = '22222222-0000-4000-8000-000000000002' ORDER BY m.user_id LIMIT 1);"
         } | Out-Null
         W "대조 두 주기 대기 (40초)"; Start-Sleep -Seconds 40
-        W ""; W "### A-7-2 어긋낸 뒤 (기대: ledger_wallet 2 · party_reward 1 · ranking 1 · 나머지 0)"
+        W ""; W "### 정합성 대조 검출-2 어긋낸 뒤 (기대: ledger_wallet 2 · party_reward 1 · ranking 1 · 나머지 0)"
         Run '대조 게이지' { Metrics '^rpgym_reconcile_' } | Out-Null
         W "대조 ERROR 로그 줄 수(어긋난 id 샘플): $(LogCount 'check=\w+ count=\d+ sample=')"
     }
@@ -1387,7 +1395,7 @@ switch ($E.Post) {
 
 # ---------------------------------------------------------------- 7. 검증 · 종료 · 분석
 Run "검증 ($($E.Verify))" { Psql-File (Join-Path $Kit $E.Verify) } | Out-Null
-if ($E.Post -eq 'A-7') { W "(A-7 은 일부러 어긋냈으므로 검증 3번 · 6번에 행이 나오는 것이 정상)" }
+if ($E.Post -eq 'reconcile-detect') { W "(정합성 대조 검출 은 일부러 어긋냈으므로 검증 3번 · 6번에 행이 나오는 것이 정상)" }
 W ""; W "### 앱 종료"
 Stop-App
 if ($E.RedisDown) { & docker start rp-gym-redis 2>&1 | Out-Null }

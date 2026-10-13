@@ -2,7 +2,7 @@
 -- 순서가 중요하다. 참조하는 쪽부터 지운다.
 BEGIN;
 
--- (A-3 · A-4) 개인 퀘스트 · 그 원장 · 그 완료 이벤트. 없으면 0행
+-- (지갑 lost update(고치기 전) · 랭킹 쓰기 순서 역전(고치기 전)) 개인 퀘스트 · 그 원장 · 그 완료 이벤트. 없으면 0행
 DELETE FROM game_service.outbox_events
  WHERE aggregate_id::text LIKE '66666666-0000-4000-8000-%';
 

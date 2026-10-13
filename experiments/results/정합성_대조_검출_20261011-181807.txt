@@ -1,0 +1,143 @@
+﻿# 실험 정합성 대조 검출 — 정합성 대조: 원장 1행 삭제 · 지갑 1명 변경을 게이지가 잡는가
+시각: 2026-10-11 18:18:07  /  앱 인자: --rpgym.reconcile.initial-delay=5000 --rpgym.reconcile.interval=15000
+브랜치: 실험 브랜치  /  커밋: 23d5f83
+
+### 인프라 기동
+ Container rp-gym-postgres-game Running 
+ Container rp-gym-redis Running 
+ Container rp-gym-kafka Running 
+
+### 토픽 파티션 수
+Topic: health.events	TopicId: 1BsBvpioTbucZBIT3dstYw	PartitionCount: 3	ReplicationFactor: 1	Configs: min.insync.replicas=1
+	Topic: health.events	Partition: 0	Leader: 1	Replicas: 1	Isr: 1	Elr: 	LastKnownElr: 
+	Topic: health.events	Partition: 1	Leader: 1	Replicas: 1	Isr: 1	Elr: 	LastKnownElr: 
+	Topic: health.events	Partition: 2	Leader: 1	Replicas: 1	Isr: 1	Elr: 	LastKnownElr: 
+
+### 지난 데이터 정리
+BEGIN
+DELETE 100
+DELETE 400
+DELETE 400
+DELETE 400
+DELETE 100
+DELETE 400
+DELETE 100
+COMMIT
+
+### 데이터 생성 (gen_aligned.py)
+murmur2 자가 검사 통과 (Kafka UtilsTest 기대값 6건)
+파티 100개 × 멤버 4명 = 이벤트 400건, 목표 3000 (완료 뒤 도착 기여 파티당 1건)
+파티션별 이벤트 수: {0: 133, 1: 134, 2: 133} -> 실행 때 오프셋 증가량이 이와 같아야 한다
+검증 기대값: 1) 100/0/100  2) 400건 · 12000  3) 0행  4) 0행  5) 100  6) 0행  참고) 1000 × 400
+만든 파일: 01_seed_aligned.sql, 02_events_aligned.template.txt
+
+### 앱 기동 (로그: C:\workspace\health_service\game-service\exp-results\정합성_대조_검출_20261011-181807.log)
+partitions assigned 6 줄 확인 (21초)
+
+### 시드
+DO
+BEGIN
+CREATE TABLE
+INSERT 0 400
+INSERT 0 100
+INSERT 0 400
+INSERT 0 100
+INSERT 0 400
+COMMIT
+ 파티 | 파티퀘스트 | 멤버 | 스냅샷 
+------+------------+------+--------
+  100 |        100 |  400 |    400
+(1 row)
+
+
+이벤트 시각 치환: __DATE__=2026-10-11  __MEASURED_AT__=2026-10-11T18:18:38+09:00
+
+### 파티션별 발행 건수
+파티션 0 : +133
+파티션 1 : +134
+파티션 2 : +133
+
+### 처리 대기
+처리 끝 (30초)
+
+### 정합성 대조 검출-1 손대기 전 (기대: 전부 0)
+
+### 대조 게이지
+rpgym_reconcile_mismatch{check="ledger_wallet"} 0.0
+rpgym_reconcile_mismatch{check="party_counter"} 0.0
+rpgym_reconcile_mismatch{check="party_reward"} 0.0
+rpgym_reconcile_mismatch{check="quest_reward"} 0.0
+rpgym_reconcile_mismatch{check="ranking"} 0.0
+
+### 일부러 어긋내기: 파티 1 의 원장 1행 삭제 · 파티 2 멤버 1명 지갑 +100
+DELETE 1
+UPDATE 1
+대조 두 주기 대기 (40초)
+
+### 정합성 대조 검출-2 어긋낸 뒤 (기대: ledger_wallet 2 · party_reward 1 · ranking 1 · 나머지 0)
+
+### 대조 게이지
+rpgym_reconcile_last_success_timestamp 1.791710418E9
+rpgym_reconcile_mismatch{check="ledger_wallet"} 2.0
+rpgym_reconcile_mismatch{check="party_counter"} 0.0
+rpgym_reconcile_mismatch{check="party_reward"} 1.0
+rpgym_reconcile_mismatch{check="quest_reward"} 0.0
+rpgym_reconcile_mismatch{check="ranking"} 1.0
+대조 ERROR 로그 줄 수(어긋난 id 샘플): 8
+
+### 검증 (03_verify_aligned.sql)
+=== 1. 완료 / 미완 / 전체 ===
+ 완료 | 미완 | 전체 
+------+------+------
+  100 |    0 |  100
+(1 row)
+
+=== 2. XP 원장 건수 · 총액 (많으면 중복 지급) ===
+ 원장_행수 | 지급_총액 
+-----------+-----------
+       399 |     11970
+(1 row)
+
+=== 3. 원장 수 <> 멤버 수 인 파티 (0행이어야 한다) ===
+            party_quest_id            |  status   | 원장 | 멤버 
+--------------------------------------+-----------+------+------
+ 22222222-0000-4000-8000-000000000001 | COMPLETED |    3 |    4
+(1 row)
+
+=== 4. 카운터 <> 멤버 기여 합 인 파티 (0행이어야 한다) ===
+ party_quest_id | 카운터 | 기여합계 
+----------------+--------+----------
+(0 rows)
+
+=== 5. 완료 이벤트(Outbox) 건수 (파티 수와 같아야 한다) ===
+ 완료이벤트 
+------------
+        100
+(1 row)
+
+=== 6. 지갑 <> 원장 합계 인 유저 (0행이어야 한다) ===
+               user_id                | 지갑 | 원장합계 
+--------------------------------------+------+----------
+ 33333333-0000-4000-8000-000000001001 |   30 |         
+ 33333333-0000-4000-8000-000000002001 |  130 |       30
+(2 rows)
+
+=== 참고: 멤버 기여분 분포 (목표 = 인원 × 1000 이면 전부 1000. 4명 · 3000 이면 0 이 섞일 수 있다: 완료가 커밋된 뒤 시작한 이벤트는 퀘스트가 이미 ACTIVE 가 아니라 통째로 무시된다) ===
+ contributed_val | count 
+-----------------+-------
+               0 |    36
+            1000 |   364
+(2 rows)
+
+=== 참고: 완료 뒤 기여의 두 갈래 (4명 · 3000 일 때) ===
+ 카운터 | 파티수 | 기여0_멤버수 
+--------+--------+--------------
+   3000 |     36 |           36
+   4000 |     64 |            0
+(2 rows)
+
+(정합성 대조 검출 은 일부러 어긋냈으므로 검증 3번 · 6번에 행이 나오는 것이 정상)
+
+### 앱 종료
+
+=== 끝. 결과 파일: C:\workspace\health_service\game-service\exp-results\정합성_대조_검출_20261011-181807.txt

@@ -1,0 +1,107 @@
+﻿# 실험 trace 이어짐 — trace 이어짐: traceparent 붙인 이벤트 -> Game 소비 -> Outbox 발행 -> game.events 헤더까지 한 trace (Zipkin)
+시각: 2026-10-12 15:10:53  /  앱 인자: 
+브랜치: 실험 브랜치  /  커밋: 86558fd
+
+### 관측 구성 기동 (develop + observe, 규칙은 game 만)
+ Container rp-gym-kafka Running 
+ Container rp-gym-postgres-game Running 
+ Container rp-gym-loki Running 
+ Container rp-gym-redis Running 
+ Container rp-gym-grafana Running 
+ Container rp-gym-prometheus Running 
+ Container rp-gym-zipkin Running 
+ Container rp-gym-alloy Running 
+ Container rp-gym-loki Waiting 
+ Container rp-gym-prometheus Waiting 
+ Container rp-gym-loki Waiting 
+ Container rp-gym-prometheus Healthy 
+ Container rp-gym-loki Healthy 
+ Container rp-gym-loki Healthy 
+Grafana 재시작: rp-gym-grafana
+Grafana 응답 (9초)
+
+### 지난 데이터 정리
+BEGIN
+DELETE 0
+DELETE 0
+DELETE 0
+DELETE 0
+DELETE 0
+DELETE 0
+COMMIT
+랭킹에서 지난 실험 유저 지우기: 0
+
+### 데이터 생성 (gen.py)
+traceparent 붙인 1건(유저 ...001, traceId b1700000000000000000000000000001, 부모 span b170000000000001) + 헤더 없는 대조 1건(유저 ...002)
+
+### 시드
+DO
+BEGIN
+INSERT 0 2
+COMMIT
+
+### 앱 기동 (앱 인자: --eureka.client.enabled=false)
+기동 확인 (18초, 로그: C:\workspace\health_service\game-service\exp-results\trace_이어짐_20261012-151053.log)
+기준 상태 대기 (10초)
+game.events 파티션별 끝 오프셋 (주입 전): 0=3546 1=4156 2=3949
+
+## 주입  15:11:37
+  A) Health 가 보냈다고 치고 traceparent 헤더를 붙인 1건: 00-b1700000000000000000000000000001-b170000000000001-01 (유저 ...001)
+    Warning: --property is deprecated and will be removed in a future version. Use --reader-property instead.
+  B) 대조: 헤더 없이 1건 (유저 ...002)
+Outbox 발행 (기대 2): 2  (0초)
+
+### Outbox 행에 저장된 trace_context (Outbox trace 연결: 적재 때 traceparent 저장)
+  q  |   event_type    |  status   |                               trace_context                               
+-----+-----------------+-----------+---------------------------------------------------------------------------
+ 001 | QUEST_COMPLETED | PUBLISHED | {"traceparent":"00-b1700000000000000000000000000001-1fa478b61b89ca92-01"}
+ 002 | QUEST_COMPLETED | PUBLISHED | {"traceparent":"00-6acc7a1dbdf974cbfd6765f95f307a46-fd6765f95f307a46-01"}
+(2 rows)
+
+Zipkin 전송 대기 (15초: span 은 비동기로 모아 보낸다)
+
+## 1) 입구부터 출구까지: Zipkin 에서 넣은 traceId 하나로 조회
+
+### Zipkin trace b1700000000000000000000000000001 (span 3개, 시간순)
+  15:11:39.367 [game-service] 'health.events receive' kind=CONSUMER id=1fa478b61b89ca92 parent=b170000000000001 671.5ms spring.kafka.listener.id=org.springframework.kafka.KafkaListenerEndpointContainer#1-2
+  15:11:39.556 [game-service] 'outbox publish' kind= id=59d340e293da8ffa parent=1fa478b61b89ca92 67.3ms 
+  15:11:39.559 [game-service] 'game.events send' kind=PRODUCER id=6165fa59f92d7003 parent=59d340e293da8ffa 63.9ms messaging.destination.kind=topic messaging.destination.name=game.events
+
+## 2) 출구: game.events 레코드 헤더 (= Notification 이 이어 받을 값)
+  유저 ...001 (파티션 2): traceparent 00-b1700000000000000000000000000001-6165fa59f92d7003
+  대조 ...002 (파티션 2): traceparent 00-6acc7a1dbdf974cbfd6765f95f307a46-59d3b1369cab760f
+
+## 3) 같은 traceId 로 Loki (로그 줄 [traceId,spanId])
+
+### Loki: traceId b1700000000000000000000000000001
+11 줄  ({job="game-blue"} |= "b1700000000000000000000000000001")
+    | 2026-10-12T15:11:39.623+09:00 DEBUG 12492 --- [game-service] [   scheduling-1] [b1700000000000000000000000000001,59d340e293da8ffa,] c.w.r.g.o.a.o.k.OutboxKafkaPublisher     : kafka 발행 완료. topic=game.events key=b1700001-0000-4000-8 …
+    | 2026-10-12T15:11:40.018+09:00 DEBUG 12492 --- [game-service] [ntainer#1-2-C-1] [b1700000000000000000000000000001,1fa478b61b89ca92,b1700009-0000-4000-8000-000000000001] c.w.r.g.r.a.RankingCommandService        : 랭킹 갱신 userId=b17000 …
+    | 2026-10-12T15:11:40.026+09:00 DEBUG 12492 --- [game-service] [ntainer#1-2-C-1] [b1700000000000000000000000000001,1fa478b61b89ca92,b1700009-0000-4000-8000-000000000001] c.w.r.g.q.a.i.kafka.HealthEventConsumer  : HEALTH_ACTIVITY_SYN …
+    | 2026-10-12T15:11:40.037+09:00 DEBUG 12492 --- [game-service] [ntainer#1-2-C-1] [b1700000000000000000000000000001,1fa478b61b89ca92,b1700009-0000-4000-8000-000000000001] c.w.r.g.q.a.i.kafka.HealthEventConsumer  : HEALTH_ACTIVITY_SYN …
+    | 2026-10-12T15:11:39.535+09:00  INFO 12492 --- [game-service] [ntainer#1-2-C-1] [b1700000000000000000000000000001,1fa478b61b89ca92,b1700009-0000-4000-8000-000000000001] c.w.r.g.q.a.QuestProgressService         : quest completed: qu …
+    | 2026-10-12T15:11:39.564+09:00  INFO 12492 --- [game-service] [   scheduling-1] [b1700000000000000000000000000001,6165fa59f92d7003,] o.a.k.clients.producer.ProducerConfig    : ProducerConfig values: 
+    | 2026-10-12T15:11:39.565+09:00  INFO 12492 --- [game-service] [   scheduling-1] [b1700000000000000000000000000001,6165fa59f92d7003,] o.a.k.c.t.i.KafkaMetricsCollector        : initializing Kafka metrics collector
+    | 2026-10-12T15:11:39.582+09:00  INFO 12492 --- [game-service] [   scheduling-1] [b1700000000000000000000000000001,6165fa59f92d7003,] o.a.k.clients.producer.KafkaProducer     : [Producer clientId=game-service-producer-1] Instantiate …
+    | 2026-10-12T15:11:39.595+09:00  INFO 12492 --- [game-service] [   scheduling-1] [b1700000000000000000000000000001,6165fa59f92d7003,] o.a.kafka.common.utils.AppInfoParser     : Kafka version: 3.9.2
+    | 2026-10-12T15:11:39.595+09:00  INFO 12492 --- [game-service] [   scheduling-1] [b1700000000000000000000000000001,6165fa59f92d7003,] o.a.kafka.common.utils.AppInfoParser     : Kafka commitId: 5e9866f43ab8e7e4
+
+## 4) 대조: 헤더 없이 넣은 건은 Game 소비에서 새 trace 가 시작돼야 한다
+
+### Zipkin trace 6acc7a1dbdf974cbfd6765f95f307a46 (span 3개)
+  15:11:41.714 [game-service] 'health.events receive' kind=CONSUMER id=fd6765f95f307a46 parent=(뿌리) 49ms spring.kafka.listener.id=org.springframework.kafka.KafkaListenerEndpointContainer#1-2
+  15:11:41.785 [game-service] 'outbox publish' kind= id=07d67c1899e98174 parent=fd6765f95f307a46 3ms 
+  15:11:41.785 [game-service] 'game.events send' kind=PRODUCER id=59d3b1369cab760f parent=07d67c1899e98174 2.8ms messaging.destination.kind=topic messaging.destination.name=game.events
+
+## 판정
+  [O] 입구: Game 소비 span 의 부모 = 넣은 span b170000000000001 (Health 의 trace 를 이어 받음)
+  [O] 같은 trace 안에 'outbox publish' span (다른 스레드 · 다른 트랜잭션의 발행이 이어 붙음, Outbox trace 연결)
+  [O] 같은 trace 안에 game.events 발행 span (PRODUCER)
+  [O] 출구: game.events 레코드 traceparent 의 traceId = b1700000000000000000000000000001
+  [O] 대조: 헤더 없는 건은 다른 traceId, 소비 span 이 뿌리
+
+캡처: http://localhost:9411/zipkin/traces/b1700000000000000000000000000001  (앱을 꺼도 Zipkin 컨테이너에 남아 있다)
+
+### 앱 종료
+
+=== 끝. 결과 파일: C:\workspace\health_service\game-service\exp-results\trace_이어짐_20261012-151053.txt
