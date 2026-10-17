@@ -44,13 +44,11 @@ public interface CharacterRepository extends JpaRepository<Character, UUID> {
                      @Param("userId") UUID userId,
                      @Param("level") int level);
 
-    // (R-20) 랭킹 재구축의 원천. 사용자별 XP 를 SQL 한 번으로 읽는다(예전: 사용자마다 XpClient 호출).
     // characters 와 wallets 양쪽의 사용자를 합친다.
     //   - characters 만 있음: 가입했지만 아직 XP 가 없다 -> 0
     //   - wallets 만 있음: XP 는 받았는데 레벨 반영(upsertLevel)이 실패했다 -> 지갑 값
     // user_id 기준 키셋 페이지네이션. OFFSET 은 뒤로 갈수록 느려진다.
     //
-    // (R-22, 2026-10-11) 예전 쿼리는 (characters UNION wallets) 를 먼저 만든 뒤 after 다음을 골랐다.
     // UNION 은 중복을 지우려고 남은 행 전체를 합치고 정렬하므로, 키셋인데도 한 페이지 비용이 "남은 사용자 수" 에 비례했다
     // (A-10: 10만 명에서 배치와 상관없이 페이지당 약 55~70ms, 배치 100 이면 57.6초).
     // 지금: 두 테이블에서 각각 인덱스(uk_characters_user_id, pk_wallets)로 after 다음 :limit 명만 읽고 합친다.

@@ -18,7 +18,6 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 public class OutboxConfig {
 
 	/**
-	 * (R-14) Game 이 발행하는 토픽을 코드로 선언한다. 예전에는 첫 발행 때 브로커가 자동 생성했다.
 	 * 파티션 3 = 컨슈머 concurrency 3 과 같은 기준. 복제 계수는 브로커 기본값을 따른다(1대면 1, 3대면 3).
 	 * 이미 있으면 KafkaAdmin 은 아무것도 바꾸지 않는다.
 	 */

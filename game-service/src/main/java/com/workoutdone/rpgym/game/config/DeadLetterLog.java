@@ -5,7 +5,6 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-// R-24: 실패 · DLT 경로의 로그 한 줄에 들어갈 내용을 만든다.
 // B-14 에서 DLT 알림을 받고 Loki 에서 eventId · userId · 예외 이름으로 찾았더니 0줄이었다.
 // DLT 발행을 직접 만든 recoverer 로 바꾸면서 스프링 기본 처리기가 찍던 "재시도 소진" ERROR 가 사라졌고,
 // 리스너에도 로그가 없었기 때문이다. 원인은 DLT 헤더에만 있었다 -> 콘솔로 토픽을 직접 열어야 했다.

@@ -61,7 +61,6 @@ spring:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
       # "보냈다"의 기준. all = 동기화된 복제본(ISR) 전부가 받아야 성공. 1이면 리더만 받고 조용히 유실될 수 있다
-      # (R-14) 주의: develop · prod 는 브로커 1대(복제 계수 1)라 ISR 이 리더 하나뿐이다. 그래서 지금 all 은
       # 사실상 1 과 같은 보장이다. 호스트가 갑자기 꺼지면 응답까지 받은 메시지도 잃을 수 있다
       # (Kafka 는 메시지마다 fsync 하지 않는다). 복제가 있는 구성은 docker-compose-kafka-ha.yml(로컬 실험용)
       acks: all
@@ -162,11 +161,9 @@ rpgym:
   kafka:
     #  이벤트 계약 -- Health 3종을 한 토픽으로 통합했다
     health-events-topic: health.events
-    # (R-19) DLT 재처리. 같은 레코드를 이 횟수만큼 되돌렸는데도 다시 DLT 로 오면 더 되돌리지 않는다
     dlt-replay:
       max-replays: 3
 
-  # (R-15) 정합성 대조. 원장=지갑, 완료 퀘스트=원장, 파티 카운터=기여 합, 파티 보상=멤버 수, 랭킹=지갑
   reconcile:
     enabled: ${RECONCILE_ENABLED:true}
     # 기동 직후는 피한다(마이그레이션 · 캐시 워밍 중)

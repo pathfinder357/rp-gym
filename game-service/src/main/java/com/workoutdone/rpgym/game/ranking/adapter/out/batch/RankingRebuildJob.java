@@ -20,9 +20,7 @@ import java.util.UUID;
  * 정기 배치가 아니다. 다음 경우에 내부 API(RankingAdminController)로 한 번 실행한다.
  *   - Redis 를 잃었다
  *   - rpgym.ranking.update.failed 알림이 울렸다
- *   - 정합성 대조(R-15)의 ranking 검사가 0 이 아니다
  *
- * (R-20) 바꾼 점
  *   예전: 사용자마다 XpClient 호출(N번 조회), 점수의 레벨은 characters.level 에서 읽었다.
  *   지금: SQL 한 번에 1,000명씩(키셋 페이지네이션). 레벨은 XP 에서 계산한다(LevelPolicy) --
  *         onXpChanged 와 같은 계산이어야 두 경로의 점수가 같다. characters.level 은 반영 실패로

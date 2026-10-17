@@ -14,8 +14,6 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * (R-17) Outbox 적재 시점의 trace context 를 저장했다가, 발행 시점에 되살린다.
- *
  * 저장 형식은 "전파 헤더 그대로"다. Propagator 가 Kafka 헤더에 쓰는 것과 같은 키 · 값을 JSON 으로 둔다
  * (기본 W3C 면 {"traceparent": "..."}). 전파 방식(W3C · B3)을 바꿔도 이 코드는 바뀌지 않는다.
  *

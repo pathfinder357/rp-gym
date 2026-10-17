@@ -26,9 +26,6 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
-
- // (R-23) 컨슈머 그룹의 "커밋 기준" lag: 파티션 끝 오프셋 −> 그룹이 커밋한 오프셋.
-
  // (근거) 2026-10-12 실험: 파티션이 20분 멈췄는데 records_lag_max 는 내내 0.
 
 // 이걸 쓰는 이유: 카프카 컨슈머 그룹의 랙(Lag)을 모니터링하거나 수집하는 기능 같은 경우,
