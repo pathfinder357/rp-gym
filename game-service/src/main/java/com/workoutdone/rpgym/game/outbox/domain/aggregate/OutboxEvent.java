@@ -61,7 +61,6 @@ public class OutboxEvent extends BaseCreatedEntity {
     @Column(name = "published_at")
     private Instant publishedAt;
 
-    // (R-17) 적재 시점의 trace context(전파 헤더 JSON). 발행 때 이걸 부모로 span 을 연다. 없을 수 있다
     @Column(name = "trace_context", length = 512, updatable = false)
     private String traceContext;
 

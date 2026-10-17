@@ -31,10 +31,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 /**
- * (R-19) DLT 에 빼 둔 레코드를 원래 토픽으로 되돌린다.
- *
- * R-1 은 "빼 두기"까지였다. 원인을 고친 뒤 다시 처리할 길이 없어서 14일 뒤 그대로 지워졌다.
- *
  * 흐름: 운영자가 원인을 고쳐 배포한다 -> dryRun 으로 무엇이 있는지 본다 -> 재처리를 부른다.
  *   - DLT 를 전용 컨슈머 그룹(game-service-dlt-replay)으로 처음부터 차례대로 읽는다. 어디까지 되돌렸는지는
  *     그 그룹의 커밋 오프셋이 기억한다. 같은 레코드를 두 번 되돌리지 않는다.
@@ -47,8 +43,6 @@ import java.util.function.Supplier;
  *
  * 왜 안전한가(= 재처리 실험으로 증명할 대상)
  *   - 이미 반영된 이벤트: 워터마크(last_applied_measured_at) 이하라 STALE 로 무시된다
- *   - 어제 이벤트: activityDate 대조(R-9 · R-10)로 개인 · 파티 모두 반영하지 않는다
- *   - 30분 지난 제안: 저장 없이 버린다(R-13 EXPIRED_ON_ARRIVAL) -> 낡은 Slack 카드가 나가지 않는다
  *   - XP 중복: 원장 유니크 제약 (user_id, source_type, source_id)
  *
  * 버린 대안

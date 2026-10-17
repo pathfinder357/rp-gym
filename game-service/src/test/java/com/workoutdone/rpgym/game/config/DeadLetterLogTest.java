@@ -12,7 +12,6 @@ import java.sql.SQLTransientConnectionException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-// R-24: DLT · 재시도 로그 한 줄에 원인 추적에 필요한 값이 다 들어가는지 본다.
 class DeadLetterLogTest {
 
     @Test

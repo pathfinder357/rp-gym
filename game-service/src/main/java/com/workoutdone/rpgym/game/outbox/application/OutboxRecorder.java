@@ -48,7 +48,7 @@ public class OutboxRecorder {
                 eventId,
                 userId,
                 toJson(envelope)
-        ).withTraceContext(outboxTraceContext.capture()));   // (R-17) 지금 처리 중인 trace 를 같이 남긴다
+        ).withTraceContext(outboxTraceContext.capture()));
     }
 
     private String toJson(EventEnvelope envelope) {

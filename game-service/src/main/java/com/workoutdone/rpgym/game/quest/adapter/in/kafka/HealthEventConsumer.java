@@ -39,7 +39,6 @@ import java.util.Optional;
  * 예전에는 계약 위반을 로그만 남기고 정상 리턴했다. 파티션은 안 막히지만 메시지가 조용히 사라졌다.
  * 알 수 없는 eventType 은 여전히 로그만 남기고 넘긴다. Health 가 새 타입을 추가해도 Game 이 멈추면 안 된다.
  *
- * (R-16) Kafka 리스너 진입점은 HealthEventListener 로 옮겼다. 레코드 timestamp 로 지연을 재야 해서
  * ConsumerRecord 를 받는 쪽이 필요했고, 이 클래스는 문자열만 받는 형태 그대로 둔다(테스트가 직접 부른다).
  */
 @Slf4j

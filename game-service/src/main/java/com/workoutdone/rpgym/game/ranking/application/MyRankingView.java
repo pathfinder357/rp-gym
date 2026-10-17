@@ -15,9 +15,7 @@ public record MyRankingView(
         int level,
         int totalXp,
         CharacterTier tier,
-        // (R-18) 랭킹 점수가 지갑 XP 를 따라잡았는가. 랭킹은 XP 지급 커밋 뒤 따로(AFTER_COMMIT) 반영되는
         // 읽기 모델이라 잠깐 뒤처질 수 있다. false 면 캐릭터 화면(지갑 기준)과 랭킹 화면의 XP 가 다르다는 뜻이고,
-        // 클라이언트는 "반영 중"으로 표시할 수 있다. 계속 false 면 정합성 대조(R-15 ranking)가 잡는다.
         boolean upToDate
 ) {
     public static MyRankingView of(UUID userId, long rank, long totalCount, double score, int walletXp){

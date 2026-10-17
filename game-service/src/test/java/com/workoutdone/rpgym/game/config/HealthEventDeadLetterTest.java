@@ -54,7 +54,6 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-// R-1 검증: 실제 브로커(내장 Kafka) 위에서 에러 핸들러가 레코드를 어디로 보내는지 본다.
 // 파티션을 하나로 두어 모든 레코드가 한 줄로 선다. 예전 설정이라면 첫 실패에서 뒤가 전부 막힌다.
 // 서비스는 목으로 대체하고 컨슈머 · 에러 핸들러 · DLT 발행만 진짜로 돈다.
 @SpringJUnitConfig
@@ -166,7 +165,6 @@ class HealthEventDeadLetterTest {
 
         assertThat(registry.get(KafkaConsumerConfig.DLT_COUNTER).counter().count()).isEqualTo(3.0);
 
-        // R-24: DLT 로 간 세 건이 각각 위치와 근본 원인을 담은 ERROR 한 줄을 남긴다 (B-14 에서는 0줄이었다)
         assertThat(output.getOut()).contains(
                 // 깨진 JSON 은 ContractViolationException 껍데기 안의 근본 원인(파싱 위치까지)이 찍힌다. 분류는 WARN 줄이 알려 준다
                 "DLT 적재. health.events-0@0 key=same-partition eventId=- -> health.events.DLT cause="
@@ -221,7 +219,6 @@ class HealthEventDeadLetterTest {
         var committed = KafkaTestUtils.getCurrentOffset(broker.getBrokersAsString(), group, topic, 0);
         assertThat(committed == null ? 0L : committed.offset()).isZero();
         assertThat(registry.get(KafkaConsumerConfig.DLT_COUNTER).counter().count()).isZero();
-        // R-24: 발행 실패도 조용하지 않다
         assertThat(output.getOut()).contains("DLT 발행 실패 -- 오프셋을 넘기지 않고 다시 처리한다. " + topic + "-0@0");
     }
 

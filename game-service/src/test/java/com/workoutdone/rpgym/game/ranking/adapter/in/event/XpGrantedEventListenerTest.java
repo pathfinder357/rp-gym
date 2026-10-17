@@ -49,7 +49,6 @@ class XpGrantedEventListenerTest {
 
         assertThatCode(() -> sut.on(new XpGranted(userId)))
                 .doesNotThrowAnyException();
-        // R-20: 삼키되 세어 둔다
         org.assertj.core.api.Assertions.assertThat(
                 meterRegistry.get("rpgym.ranking.update.failed").tag("stage", "listener").counter().count())
                 .isEqualTo(1.0);

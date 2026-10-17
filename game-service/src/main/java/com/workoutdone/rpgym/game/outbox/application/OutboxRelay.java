@@ -68,7 +68,6 @@ public class OutboxRelay {
              * 발행 시점에 JSON을 다시 만들면 event_id가 재발행마다 바뀌어
              * 소비 측의 중복 처리 방지가 무력화된다.
              */
-            // (R-17) 적재 시점의 trace 를 부모로 발행한다. Notification 까지 같은 traceId 로 이어진다
             outboxTraceContext.runInContext(event.getTraceContext(), "outbox publish", () ->
                     eventPublisherPort.publish(
                             properties.topic(),

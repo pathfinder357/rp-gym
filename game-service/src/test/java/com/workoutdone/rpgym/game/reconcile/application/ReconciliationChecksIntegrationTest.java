@@ -27,7 +27,6 @@ import java.util.stream.Collectors;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * (R-15 · R-20) 대조 SQL 과 랭킹 관련 네이티브 쿼리를 실제 PostgreSQL(Flyway 스키마)에서 확인한다.
  * 일부러 어긋난 데이터를 넣고, 검사마다 정확히 그 행만 잡는지 본다.
  */
 @Testcontainers(disabledWithoutDocker = true)

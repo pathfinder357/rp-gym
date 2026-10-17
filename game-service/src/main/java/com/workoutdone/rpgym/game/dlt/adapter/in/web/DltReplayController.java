@@ -8,8 +8,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * (R-19) DLT 재처리 운영용 내부 API. 게이트웨이가 /api/v1/internal/** 를 막으므로 서비스 포트로 직접 부른다.
- *
  *   POST /api/v1/internal/games/dlt/replay?dryRun=true    무엇이 쌓였는지 보기(발행 · 커밋 없음)
  *   POST /api/v1/internal/games/dlt/replay?dryRun=false   원인을 고친 뒤 되돌리기
  *

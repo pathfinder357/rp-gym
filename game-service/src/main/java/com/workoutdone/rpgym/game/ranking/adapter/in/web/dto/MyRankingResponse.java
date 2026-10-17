@@ -12,7 +12,6 @@ public record MyRankingResponse(
         int level,
         int totalXp,
         String tier,
-        // (R-18) 랭킹 점수가 지갑 XP 를 따라잡았는가. MyRankingView 주석 참고
         boolean upToDate
 ) {
 

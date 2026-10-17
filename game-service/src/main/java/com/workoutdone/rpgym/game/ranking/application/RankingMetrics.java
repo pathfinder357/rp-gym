@@ -5,8 +5,6 @@ import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.stereotype.Component;
 
 /**
- * (R-20) 랭킹 읽기 모델 반영 실패를 센다.
- *
  * 예전에는 log.warn / log.error 만 남겼다. 그 사용자가 다음 XP 를 받을 때까지 랭킹이 틀린 채로 남는데
  * 아무도 몰랐다. 이 카운터가 늘면 알림이 울리고, 대응은 재구축 1회다.
  *
